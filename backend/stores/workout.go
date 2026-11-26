@@ -1,0 +1,427 @@
+package stores
+
+import (
+	"database/sql"
+	"strings"
+
+	"github.com/Cawlumm/lyftr-backend/models"
+)
+
+// WorkoutStore owns all SQL for workouts, workout_exercises and sets, plus the
+// workout-derived exercise analytics (PRs/history/daily count).
+type WorkoutStore struct{ db *sql.DB }
+
+func NewWorkoutStore(db *sql.DB) *WorkoutStore { return &WorkoutStore{db: db} }
+
+// WorkoutFilter holds list paging + optional name search.
+type WorkoutFilter struct {
+	Limit, Offset int
+	Query         string
+}
+
+const workoutCols = `id, user_id, name, notes, duration, started_at, tz_offset_minutes, created_at`
+
+func scanWorkout(row interface{ Scan(...any) error }, w *models.Workout) error {
+	return row.Scan(&w.ID, &w.UserID, &w.Name, &w.Notes, &w.Duration, &w.StartedAt, &w.TZOffsetMinutes, &w.CreatedAt)
+}
+
+func (s *WorkoutStore) List(uid int64, f WorkoutFilter, locale string) ([]models.Workout, error) {
+	var rows *sql.Rows
+	var err error
+	if f.Query != "" {
+		rows, err = s.db.Query(
+			`SELECT `+workoutCols+` FROM workouts WHERE user_id = ? AND LOWER(name) LIKE ? ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+			uid, "%"+strings.ToLower(f.Query)+"%", f.Limit, f.Offset,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT `+workoutCols+` FROM workouts WHERE user_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+			uid, f.Limit, f.Offset,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	workouts := []models.Workout{}
+	for rows.Next() {
+		var w models.Workout
+		if err := scanWorkout(rows, &w); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		workouts = append(workouts, w)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // close the parent cursor BEFORE loading children (#36: avoid holding 2 pool connections per request)
+
+	for i := range workouts {
+		ex, err := s.loadExercises(workouts[i].ID, locale)
+		if err != nil {
+			return nil, err
+		}
+		workouts[i].Exercises = ex
+	}
+	return workouts, nil
+}
+
+// Get returns a user-owned workout with its exercises/sets, or sql.ErrNoRows.
+func (s *WorkoutStore) Get(uid, id int64, locale string) (models.Workout, error) {
+	var w models.Workout
+	if err := scanWorkout(
+		s.db.QueryRow(`SELECT `+workoutCols+` FROM workouts WHERE id = ? AND user_id = ?`, id, uid), &w,
+	); err != nil {
+		return models.Workout{}, err
+	}
+	ex, err := s.loadExercises(id, locale)
+	if err != nil {
+		return models.Workout{}, err
+	}
+	w.Exercises = ex
+	return w, nil
+}
+
+// get re-reads by id (no user scope) — used after a user-scoped write.
+func (s *WorkoutStore) get(id int64, locale string) (models.Workout, error) {
+	var w models.Workout
+	if err := scanWorkout(s.db.QueryRow(`SELECT `+workoutCols+` FROM workouts WHERE id = ?`, id), &w); err != nil {
+		return models.Workout{}, err
+	}
+	ex, err := s.loadExercises(id, locale)
+	if err != nil {
+		return models.Workout{}, err
+	}
+	w.Exercises = ex
+	return w, nil
+}
+
+// createWorkoutTx inserts the workout + its exercises/sets within an existing
+// transaction, returning the new workout id. Factored out so the
+// PR-snapshot read, the insert, and the suggestion-staging write can share one
+// transaction (see CreateWithProgression) — SQLite then serializes concurrent
+// submissions instead of letting them read the same stale prior-best (#40).
+func createWorkoutTx(tx *sql.Tx, uid int64, req models.CreateWorkoutRequest) (int64, error) {
+	// ProgramID (nil for freestyle workouts) is persisted so ProgramStore can compute
+	// a routine's cycle position — see ProgramStore.currentDayIndex. No FK: deleting
+	// a program must never take workout history down with it. ProgramDayID pins WHICH
+	// day of the cycle this workout was for (day-accurate due-day tracking); its FK is
+	// ON DELETE SET NULL so deleting/editing a day only drops the linkage, never the
+	// workout.
+	//
+	// A live session can outlive its routine's day rows (an edit mid-workout can
+	// remove days, a delete takes the whole program), so a stale/foreign day id must
+	// degrade to "day unknown" (NULL) here — never fail the user's save on the FK. The same check
+	// re-scopes the id to THIS request's program AND the calling user (via the
+	// programs join), so a client can't link a workout to another program's day or
+	// probe/persist references into some other user's routine. A REST day's id
+	// degrades to NULL the same way (is_rest_day = 0 below): rest days are excluded
+	// from the due-day tracker's anchor lookup, so persisting such a link would
+	// strand the workout — neither anchoring nor advancing the tracker — where a
+	// day-less row still advances it count-based.
+	dayID := req.ProgramDayID
+	if dayID != nil {
+		if req.ProgramID == nil {
+			dayID = nil // a day without its program is meaningless
+		} else {
+			var ok int64
+			err := tx.QueryRow(
+				`SELECT pd.id FROM program_days pd
+				 JOIN programs p ON p.id = pd.program_id AND p.user_id = ?
+				 WHERE pd.id = ? AND pd.program_id = ? AND pd.is_rest_day = 0`, uid, *dayID, *req.ProgramID,
+			).Scan(&ok)
+			if err == sql.ErrNoRows {
+				dayID = nil
+			} else if err != nil {
+				return 0, err
+			}
+		}
+	}
+	res, err := tx.Exec(
+		`INSERT INTO workouts (user_id, name, notes, duration, started_at, tz_offset_minutes, program_id, program_day_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uid, req.Name, req.Notes, req.Duration, req.StartedAt, req.TZOffsetMinutes, req.ProgramID, dayID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	wid, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err := insertWorkoutExercises(tx, wid, req.Exercises); err != nil {
+		return 0, err
+	}
+	return wid, nil
+}
+
+// Update replaces a user-owned workout and its children in one tx. sql.ErrNoRows
+// if the workout isn't theirs (nothing is mutated).
+func (s *WorkoutStore) Update(uid, id int64, req models.CreateWorkoutRequest, locale string) (models.Workout, error) {
+	// Ownership check + replace-children, all in one transaction (no TOCTOU).
+	if err := inTxDo(s.db, func(tx *sql.Tx) error {
+		var ownedID int64
+		if err := tx.QueryRow(`SELECT id FROM workouts WHERE id = ? AND user_id = ?`, id, uid).Scan(&ownedID); err != nil {
+			return err // ErrNoRows = not theirs
+		}
+		// started_at is only rewritten when the request carries one: a PUT omitting
+		// it (a name/notes-only patch) must not zero the stored timestamp — it's the
+		// due-day tracker's ordering key (ProgramStore.currentDayIndex), and a
+		// 0001-01-01 rewrite would silently drop this workout to oldest.
+		if req.StartedAt.IsZero() {
+			if _, err := tx.Exec(
+				`UPDATE workouts SET name = ?, notes = ?, duration = ? WHERE id = ?`,
+				req.Name, req.Notes, req.Duration, id,
+			); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(
+			// The offset travels with the instant. Rewriting started_at without it leaves
+			// the row describing a moment in one zone and a day in another, so the day the
+			// edit screen showed and the day every reader derives disagree — the entry
+			// silently lands a day off. Only rewritten alongside started_at: the branch
+			// above is a name/notes patch, where the original offset is still the true one.
+			`UPDATE workouts SET name = ?, notes = ?, duration = ?, started_at = ?, tz_offset_minutes = ? WHERE id = ?`,
+			req.Name, req.Notes, req.Duration, req.StartedAt, req.TZOffsetMinutes, id,
+		); err != nil {
+			return err
+		}
+		exercises := req.Exercises
+		if req.LegacySupersets {
+			var err error
+			if exercises, err = carryWorkoutSupersets(tx, id, exercises); err != nil {
+				return err
+			}
+		}
+		// Children replaced wholesale; sets cascade-delete with their workout_exercise.
+		if _, err := tx.Exec(`DELETE FROM workout_exercises WHERE workout_id = ?`, id); err != nil {
+			return err
+		}
+		return insertWorkoutExercises(tx, id, exercises)
+	}); err != nil {
+		return models.Workout{}, err
+	}
+	return s.get(id, locale)
+}
+
+func (s *WorkoutStore) Delete(uid, id int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM workouts WHERE id = ? AND user_id = ?`, id, uid)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// carryWorkoutSupersets returns a copy of exercises labelled as the stored rows were, for an
+// edit from a client that cannot send labels (CreateWorkoutRequest.LegacySupersets).
+func carryWorkoutSupersets(tx *sql.Tx, wid int64, exercises []models.CreateWorkoutExerciseReq) ([]models.CreateWorkoutExerciseReq, error) {
+	prevIDs, prevGroups, err := storedSupersetGroups(tx,
+		`SELECT exercise_id, superset_group FROM workout_exercises WHERE workout_id = ? ORDER BY order_index`, wid)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, len(exercises))
+	for i, ex := range exercises {
+		ids[i] = ex.ExerciseID
+	}
+	groups := carrySupersetGroups(prevIDs, prevGroups, ids)
+	out := make([]models.CreateWorkoutExerciseReq, len(exercises))
+	for i, ex := range exercises {
+		ex.SupersetGroup = groups[i]
+		out[i] = ex
+	}
+	return out, nil
+}
+
+// insertWorkoutExercises writes the exercises + their sets for a workout within tx.
+func insertWorkoutExercises(tx *sql.Tx, wid int64, exercises []models.CreateWorkoutExerciseReq) error {
+	groups := make([]*int, len(exercises))
+	for i, ex := range exercises {
+		groups[i] = ex.SupersetGroup
+	}
+	groups = normaliseSupersetGroups(groups)
+	for i, ex := range exercises {
+		exRes, err := tx.Exec(
+			`INSERT INTO workout_exercises (workout_id, exercise_id, order_index, notes, rest_seconds, superset_group) VALUES (?, ?, ?, ?, ?, ?)`,
+			wid, ex.ExerciseID, i, ex.Notes, ex.RestSeconds, groups[i],
+		)
+		if err != nil {
+			return err
+		}
+		weid, err := exRes.LastInsertId()
+		if err != nil {
+			return err
+		}
+		for j, st := range ex.Sets {
+			if _, err := tx.Exec(
+				`INSERT INTO sets (workout_exercise_id, set_number, reps, weight, duration, distance, rpe, is_warmup)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				weid, j+1, st.Reps, st.Weight, st.Duration, st.Distance, st.RPE, st.IsWarmup,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// loadExercises loads a workout's exercises (JOIN exercises for display) then
+// their sets. Scans + closes the parent cursor fully BEFORE the per-exercise set
+// queries (#36) so a request never holds two pool connections at once.
+func (s *WorkoutStore) loadExercises(workoutID int64, locale string) ([]models.WorkoutExercise, error) {
+	join, joinArgs := translationJoin(locale)
+	rows, err := s.db.Query(
+		`SELECT we.id, we.workout_id, we.exercise_id, we.order_index, we.notes, we.rest_seconds, we.superset_group,
+		        `+localizedName+`, e.muscle_group, e.category, e.equipment, e.image_url, e.owner_user_id IS NOT NULL, COALESCE(e.photo_id, '')
+		 FROM workout_exercises we
+		 JOIN exercises e ON e.id = we.exercise_id`+join+`
+		 WHERE we.workout_id = ? ORDER BY we.order_index`,
+		append(joinArgs, workoutID)...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var exercises []models.WorkoutExercise
+	for rows.Next() {
+		var we models.WorkoutExercise
+		var group sql.NullInt64
+		if err := rows.Scan(
+			&we.ID, &we.WorkoutID, &we.ExerciseID, &we.OrderIndex, &we.Notes, &we.RestSeconds, &group,
+			&we.Exercise.Name, &we.Exercise.MuscleGroup, &we.Exercise.Category,
+			&we.Exercise.Equipment, &we.Exercise.ImageURL, &we.Exercise.IsCustom, &we.Exercise.PhotoID,
+		); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		we.SupersetGroup = nullableInt(group)
+		we.Exercise.ID = we.ExerciseID
+		exercises = append(exercises, we)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	for i := range exercises {
+		sets, err := s.loadSets(exercises[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		exercises[i].Sets = sets
+	}
+	return exercises, nil
+}
+
+func (s *WorkoutStore) loadSets(workoutExerciseID int64) ([]models.Set, error) {
+	rows, err := s.db.Query(
+		`SELECT id, workout_exercise_id, set_number, reps, weight, duration, distance, rpe, is_warmup
+		 FROM sets WHERE workout_exercise_id = ? ORDER BY set_number`,
+		workoutExerciseID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sets []models.Set
+	for rows.Next() {
+		var st models.Set
+		if err := rows.Scan(&st.ID, &st.WorkoutExerciseID, &st.SetNumber, &st.Reps, &st.Weight, &st.Duration, &st.Distance, &st.RPE, &st.IsWarmup); err != nil {
+			return nil, err
+		}
+		sets = append(sets, st)
+	}
+	return sets, rows.Err()
+}
+
+// CountOnLocalDay counts workouts whose own recorded offset puts them on `day`.
+//
+// Shifting the instant by the row's stored offset is exact and needs no zone: a
+// workout at 2026-08-04T16:00Z with offset -240 was 12:00 on the 4th where it
+// happened, and always will be. Rows predating the column have a NULL offset and are
+// counted as UTC, which is the day they were counted under before it existed.
+func (s *WorkoutStore) CountOnLocalDay(uid int64, day string) (int, error) {
+	var n int
+	// substr(...,1,19) takes the "YYYY-MM-DD HH:MM:SS" prefix. The driver writes a
+	// time.Time in Go's String() form — "2026-04-25 03:30:00 +0000 UTC" — which
+	// SQLite's date() cannot parse at all, returning NULL and matching nothing. The
+	// prefix is a format it does accept, and is UTC because every write path
+	// normalizes to UTC before storing (normalizeLoggedAt, plus the boot-time
+	// normalizeUTCTimestamps for older rows).
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM workouts
+		 WHERE user_id = ?
+		   AND date(substr(started_at, 1, 19), CAST(COALESCE(tz_offset_minutes, 0) AS TEXT) || ' minutes') = ?`,
+		uid, day,
+	).Scan(&n)
+	return n, err
+}
+
+// ExercisePR is the best single set for an exercise (heaviest, then most reps).
+type ExercisePR struct {
+	Weight    float64
+	Reps      int
+	Date      string
+	WorkoutID int64
+}
+
+// ExerciseHistoryPoint is a per-workout rollup for an exercise's progress chart.
+type ExerciseHistoryPoint struct {
+	Date        string  `json:"date"`
+	MaxWeight   float64 `json:"max_weight"`
+	TotalVolume float64 `json:"total_volume"`
+	SetsCount   int     `json:"sets_count"`
+}
+
+// PRForExercise returns the user's PR set for an exercise, or sql.ErrNoRows if
+// they have no qualifying (non-warmup, weighted) set. Reads workout tables — this
+// is workout-derived analytics keyed by exercise, so it lives on WorkoutStore.
+func (s *WorkoutStore) PRForExercise(uid, exerciseID int64) (ExercisePR, error) {
+	return prForExerciseTx(s.db, uid, exerciseID)
+}
+
+// prForExerciseTx runs the PRForExercise query against anything that can QueryRow —
+// s.db for the standalone read, or an existing *sql.Tx when the read must be
+// serialized with a later write in the same transaction (see CreateWithProgression).
+func prForExerciseTx(q interface {
+	QueryRow(query string, args ...any) *sql.Row
+}, uid, exerciseID int64) (ExercisePR, error) {
+	var pr ExercisePR
+	err := q.QueryRow(`
+		SELECT s.weight, s.reps, w.started_at, w.id
+		FROM sets s
+		JOIN workout_exercises we ON we.id = s.workout_exercise_id
+		JOIN workouts w ON w.id = we.workout_id
+		WHERE w.user_id = ? AND we.exercise_id = ? AND s.is_warmup = 0 AND s.weight > 0
+		ORDER BY s.weight DESC, s.reps DESC
+		LIMIT 1
+	`, uid, exerciseID).Scan(&pr.Weight, &pr.Reps, &pr.Date, &pr.WorkoutID)
+	return pr, err
+}
+
+func (s *WorkoutStore) HistoryForExercise(uid, exerciseID int64, limit int) ([]ExerciseHistoryPoint, error) {
+	rows, err := s.db.Query(`
+		SELECT w.started_at, MAX(s.weight), SUM(s.reps * s.weight), COUNT(s.id)
+		FROM sets s
+		JOIN workout_exercises we ON we.id = s.workout_exercise_id
+		JOIN workouts w ON w.id = we.workout_id
+		WHERE w.user_id = ? AND we.exercise_id = ? AND s.is_warmup = 0
+		GROUP BY w.id
+		ORDER BY w.started_at DESC
+		LIMIT ?
+	`, uid, exerciseID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	history := []ExerciseHistoryPoint{}
+	for rows.Next() {
+		var p ExerciseHistoryPoint
+		if err := rows.Scan(&p.Date, &p.MaxWeight, &p.TotalVolume, &p.SetsCount); err != nil {
+			return nil, err
+		}
+		history = append(history, p)
+	}
+	return history, rows.Err()
+}

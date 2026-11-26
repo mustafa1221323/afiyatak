@@ -1,0 +1,379 @@
+// Domain types — the single definition for web and mobile. These mirror the Go structs
+// in backend/models/models.go; when an API response shape changes, change it here.
+export interface User {
+  id: number
+  email: string
+  // Absent from a user persisted before the field existed; read it as "not an admin".
+  is_admin?: boolean
+  created_at: string
+  updated_at?: string
+}
+
+export interface UserSettings {
+  user_id: number
+  weight_unit: 'lbs' | 'kg'
+  calorie_target: number
+  protein_target: number
+  carb_target: number
+  fat_target: number
+  workout_layout?: 'list' | 'gym'
+  // Client-only (device storage, not persisted server-side):
+  rest_enabled?: boolean        // master rest-timer on/off
+  rest_seconds_default?: number // default rest seconds, seeds new exercises
+  /** IANA zone the server buckets this user's day-scoped data in. */
+  timezone: string
+  /**
+   * What the person wants to be called (#170). Empty means they never set one and
+   * the screens fall back to their email — see `displayName`. Optional because a
+   * settings payload from an instance older than this field simply omits it.
+   */
+  display_name?: string
+}
+
+export interface Exercise {
+  id: number
+  name: string
+  muscle_group: string
+  secondary_muscles: string[]
+  category: string
+  equipment: string
+  description: string
+  // The steps, one per entry. Absent from a server older than the list: see exerciseSteps.
+  instructions?: string[]
+  image_url?: string
+  video_url?: string
+  // Created by the signed-in user and visible to them alone. Absent from servers older
+  // than custom exercises, which is the same as false.
+  is_custom?: boolean
+  // Hidden from search; history that references it still reads.
+  archived?: boolean
+  // Set when the exercise was merged: its history now lives under this id.
+  merged_into_id?: number
+  // Random id of the user's own picture; changes on replace, so it doubles as the cache key.
+  // Absent when there is none (and on servers older than custom-exercise photos).
+  photo_id?: string
+}
+
+// The body of POST /exercises and PUT /exercises/:id. muscle_group is required; the
+// server fills equipment (body-only) and category (strength) when they are omitted.
+export interface CustomExerciseInput {
+  name: string
+  muscle_group: string
+  equipment?: string
+  category?: string
+  secondary_muscles?: string[]
+  description?: string
+  instructions?: string[]
+  // Create only: one per form, so a retried POST returns the row it already made.
+  client_id?: string
+}
+
+// How many of the signed-in user's rows reference an exercise, so a merge can say what moves.
+export interface ExerciseUsage {
+  workouts: number
+  program_days: number
+  /** Asked with a merge target: program days that list both (a merge combines them). Absent
+   *  from a server older than that. */
+  shared_program_days?: number
+}
+
+export interface ExerciseMergeResult {
+  moved_workouts: number
+  moved_program_days: number
+  into: Exercise
+}
+
+export interface Set {
+  id?: number
+  set_number: number
+  reps: number
+  weight: number
+  duration?: number
+  distance?: number
+  rpe?: number
+  is_warmup?: boolean
+}
+
+export interface WorkoutExercise {
+  id?: number
+  workout_id?: number
+  exercise_id: number
+  order_index?: number
+  notes?: string
+  exercise: Exercise
+  rest_seconds?: number
+  /** Run label; rows sharing it and adjacent form a superset. null/absent = none. */
+  superset_group?: number | null
+  sets: Set[]
+}
+
+export interface Workout {
+  id: number
+  user_id?: number
+  name: string
+  notes?: string
+  duration: number
+  started_at: string
+  /** UTC offset in minutes when the workout started, e.g. -240. Absent on pre-migration rows. */
+  tz_offset_minutes?: number
+  created_at: string
+  exercises: WorkoutExercise[]
+  // Present on the create response when finishing auto-progressed routine targets (#40).
+  progression?: ProgressionResult
+}
+
+// Summary of staged routine suggestions, used for the finish toast (#40).
+export interface ProgressionResult {
+  program_id: number
+  program_name: string
+  count: number
+  is_pr?: boolean
+}
+
+export interface WeightLog {
+  id: number
+  user_id?: number
+  weight: number
+  notes?: string
+  logged_at: string
+  /** Calendar day the entry is filed under, YYYY-MM-DD. Stored server-side, never re-derived. */
+  logged_on: string
+  created_at?: string
+}
+
+export interface FoodLog {
+  id: number
+  user_id?: number
+  name: string
+  /** The product this entry was, so Recent can be matched against Favorites. '' when unbranded. */
+  brand?: string
+  meal: 'breakfast' | 'lunch' | 'dinner' | 'snacks'
+  calories: number
+  protein: number
+  carbs: number
+  fat: number
+  fiber?: number
+  servings: number
+  serving_size?: string
+  /** The serving as a number, in {@link serving_unit}. 0 when unknown — see FoodSearchResult. */
+  serving_quantity?: number
+  serving_unit?: 'g' | 'ml' | ''
+  barcode?: string
+  image_url?: string
+  logged_at: string
+  /** Calendar day the entry is filed under, YYYY-MM-DD. Stored server-side, never re-derived. */
+  logged_on: string
+  created_at?: string
+}
+
+export interface DailyStats {
+  date: string
+  total_calories: number
+  total_protein: number
+  total_carbs: number
+  total_fat: number
+  total_fiber: number
+  workout_count: number
+}
+
+export interface FoodSearchResult {
+  name: string
+  brand?: string
+  calories: number
+  protein: number
+  carbs: number
+  fat: number
+  fiber: number
+  serving_size: string
+  /**
+   * The serving as a number the UI can do arithmetic with, so a food can be logged as
+   * "15 ml" rather than "0.15 servings". `serving_size` stays the label people read
+   * ("1 Tbsp (15 ml)"); it is OpenFoodFacts free text and is not parseable.
+   *
+   * 0 or absent means no quantity is known — OpenFoodFacts often has a serving but not
+   * its size — and the screens then stay on servings rather than invent a weight.
+   */
+  serving_quantity?: number
+  serving_unit?: 'g' | 'ml' | ''
+  /** Set on OpenFoodFacts rows; search hits carry it so selecting one can re-read the product. */
+  barcode?: string
+  image_url?: string
+  source: 'off' | 'saved' | 'manual'
+}
+
+export interface SavedFood {
+  id: number
+  name: string
+  brand?: string
+  calories: number
+  protein: number
+  carbs: number
+  fat: number
+  fiber: number
+  serving_size: string
+  /** See FoodSearchResult — kept so logging a favourite can still offer weight. */
+  serving_quantity?: number
+  serving_unit?: 'g' | 'ml' | ''
+  barcode?: string
+}
+
+export interface FoodHistoryPoint {
+  date: string
+  calories: number
+  protein: number
+  carbs: number
+  fat: number
+}
+
+export interface WeightStats {
+  latest: number
+  starting: number
+  min: number
+  max: number
+  avg: number
+  total_entries: number
+  change_7d: number
+  change_30d: number
+}
+
+export interface ProgramSet {
+  id?: number
+  set_number: number
+  target_reps: number
+  target_weight: number
+  // Pending auto-progression suggestion (#40) — present when the last workout beat
+  // this set's target. The user approves it on the routine (copies into target_*).
+  suggested_reps?: number
+  suggested_weight?: number
+  suggested_is_pr?: boolean
+}
+
+export interface ProgramExercise {
+  id?: number
+  program_day_id?: number
+  exercise_id: number
+  order_index?: number
+  notes?: string
+  exercise: Exercise
+  rest_seconds?: number
+  superset_group?: number | null
+  sets: ProgramSet[]
+}
+
+// One slot in a program's repeating cycle: a workout day (its own ordered
+// exercises/sets) or a rest day (exercises always empty). Days repeat in
+// order_index order once the sequence is exhausted — NOT locked to a calendar week
+// (a 6-day cycle repeats every 6 days regardless of which weekday it lands on).
+export interface ProgramDay {
+  id?: number
+  program_id?: number
+  order_index: number
+  is_rest_day: boolean
+  name?: string
+  exercises: ProgramExercise[]
+}
+
+export interface Program {
+  id: number
+  name: string
+  notes?: string
+  created_at: string
+  days: ProgramDay[]
+  // Which entry of `days` is due today — computed server-side from WHICH day the
+  // most recent program workout was logged against: the next workout day after it
+  // in cycle order (rest days are never due; wraps to the first workout day).
+  current_day_index: number
+}
+
+export interface ActiveSessionSet {
+  set_number: number
+  target_reps: number
+  target_weight: number
+  actual_reps: number
+  actual_weight: number
+  completed: boolean
+  // Links back to the routine's ProgramSet so finishing can auto-progress that
+  // target (issue #40). Absent for freestyle sessions and ad-hoc added sets.
+  program_set_id?: number
+}
+
+export interface ActiveSessionExercise {
+  exercise_id: number
+  exercise: Exercise
+  notes: string
+  rest_seconds?: number
+  superset_group?: number | null
+  sets: ActiveSessionSet[]
+}
+
+export interface ActiveSession {
+  program_id?: number
+  // WHICH day of the program's cycle this session was started under — persisted on
+  // the created workout so the server's due-day tracker follows what was actually
+  // logged (not a blind count). Absent for freestyle sessions.
+  program_day_id?: number
+  name: string
+  started_at: string
+  /** UTC offset in minutes when the workout started, e.g. -240. Absent on pre-migration rows. */
+  tz_offset_minutes?: number
+  exercises: ActiveSessionExercise[]
+  device_id?: string
+}
+
+export interface AuthResponse {
+  token: string
+  refresh_token: string
+  user: User
+}
+
+export interface PersonalRecord {
+  weight: number
+  reps: number
+  estimated_1rm: number
+  date: string
+  workout_id: number
+}
+
+export interface ExerciseHistoryPoint {
+  date: string
+  max_weight: number
+  total_volume: number
+  sets_count: number
+}
+
+export interface LoginRequest {
+  email: string
+  password: string
+}
+
+export interface RegisterRequest {
+  email: string
+  password: string
+}
+
+/** What /auth/refresh and /me/password return: credentials without a user body. */
+export interface TokenPair {
+  token: string
+  refresh_token: string
+}
+
+export interface ChangeEmailRequest {
+  email: string
+  current_password: string
+}
+
+export interface ChangePasswordRequest {
+  current_password: string
+  new_password: string
+}
+
+// The sync fields are absent from servers older than the one that added them.
+export interface ExerciseCacheStatus {
+  count: number
+  syncing?: boolean
+  last_synced_at?: string | null
+  last_attempt_at?: string | null
+  next_attempt_at?: string | null
+  last_failed?: boolean
+  last_failure?: 'unreachable' | 'other' | null
+}

@@ -1,0 +1,123 @@
+import { useCallback, useState } from 'react'
+import { i18n, useTranslation } from '../i18n'
+import type { FoodSearchResult } from '../types'
+import {
+  amountForServings, formatServings, MAX_SERVINGS, maxAmountFor, servingBasis,
+  servingsForAmount, type ServingBasis,
+} from '../utils/food'
+
+export interface FoodAmount {
+  /** The field's text, as typed. A buffer, so a half-typed "0." survives. */
+  text: string
+  /** Type `next`. Returns false when it passed the ceiling and was not taken. */
+  setText: (next: string) => boolean
+  /** What a serving measures, or null when nothing knows and the field counts servings. */
+  basis: ServingBasis | null
+  /** What the diary stores. 0 for an empty or nonsense field — the caller blocks the log. */
+  servings: number
+  /** The same number, to read rather than compute with. */
+  servingsLabel: number
+  /** Set when the amount is more than one entry may hold — the caller blocks the log. */
+  overLimit: boolean
+  /** Why the field is at its limit — over it, or the last keystroke was refused for passing it. */
+  limitHint: string | null
+  /** Step by one serving's worth, in whatever unit the field is showing. */
+  step: (direction: 1 | -1) => void
+  /** Open the field on one serving of this food. */
+  openOn: (result: Pick<FoodSearchResult, 'serving_quantity' | 'serving_unit'>) => void
+  /** Open it on the amount an existing entry recorded, in the unit it was logged in. */
+  openOnEntry: (
+    result: Pick<FoodSearchResult, 'serving_quantity' | 'serving_unit'>,
+    servings: number,
+  ) => void
+}
+
+// The amount field on the Log Food screen, for both apps.
+//
+// It is a weight or a volume when OpenFoodFacts knows what a serving measures, and a
+// servings multiplier when nothing does — which is half of OpenFoodFacts and every
+// hand-entered food. Either way what comes out is servings, because that is what the
+// diary has always stored; the unit is a way to type one (#171, #41).
+//
+// Shared rather than written twice for the reason entryToResult is: this is arithmetic
+// that decides how much food a person recorded, and a version of it that drifted on one
+// platform would mis-log food there with nothing failing.
+//
+// There is deliberately no minimum. The old one was 0.5 servings, which for a bottle of
+// olive oil — whose figures OpenFoodFacts holds per 100 ml — meant 50 ml was the
+// smallest pour anyone could record. The server has never had a floor.
+export function useFoodAmount(
+  selected: Pick<FoodSearchResult, 'serving_quantity' | 'serving_unit'> | null,
+): FoodAmount {
+  // Subscribes to a language switch: `limitHint` is made from the catalog at render.
+  useTranslation()
+  const [text, setText] = useState('1')
+  const [refused, setRefused] = useState(false)
+
+  const openOn = useCallback((result: Pick<FoodSearchResult, 'serving_quantity' | 'serving_unit'>) => {
+    const b = servingBasis(result)
+    setText(String(b ? b.quantity : 1))
+    setRefused(false)
+  }, [])
+
+  const openOnEntry = useCallback((
+    result: Pick<FoodSearchResult, 'serving_quantity' | 'serving_unit'>,
+    entryServings: number,
+  ) => {
+    const b = servingBasis(result)
+    const s = entryServings || 1
+    setText(String(b ? amountForServings(s, b) : s))
+    setRefused(false)
+  }, [])
+
+  const basis = selected ? servingBasis(selected) : null
+  const amount = Number(text)
+  const current = Number.isFinite(amount) ? amount : 0
+  const ceiling = basis ? amountForServings(MAX_SERVINGS, basis) : MAX_SERVINGS
+  const servingsFor = (a: number) => Number.isFinite(a) && a > 0
+    ? (basis ? servingsForAmount(a, basis) : a)
+    : 0
+  const servings = servingsFor(amount)
+
+  // A keystroke that would take the field past the ceiling is not accepted, so the
+  // person types up to the limit and no further, as a maxLength would. Lowering is
+  // always allowed, so an entry stored above the limit before the server enforced it can
+  // still be edited down rather than trapping the field. A refusal is remembered so the
+  // screen can say why the digit did not land. Judged in servings, as overLimit is, so
+  // the field can never take a value it then calls over the limit.
+  const setAmountText = (next: string) => {
+    const nextServings = servingsFor(Number(next))
+    const ok = !(nextServings > MAX_SERVINGS && nextServings > servings)
+    setRefused(!ok)
+    if (ok) setText(next)
+    return ok
+  }
+
+  return {
+    text,
+    setText: setAmountText,
+    basis,
+    servings,
+    servingsLabel: formatServings(servings),
+    // Checked here rather than on each screen so web and mobile cannot disagree about
+    // what is loggable — and on servings, which is the number the server bounds too, so
+    // the two cannot refuse different things.
+    overLimit: servings > MAX_SERVINGS,
+    limitHint: servings > MAX_SERVINGS || refused ? i18n.t('food.limitHint', { amount: maxAmountFor(basis) }) : null,
+    step: (direction) => {
+      const size = basis ? basis.quantity : 0.5
+      // Stops at the ceiling as it stops at zero: a stepper that walks past what one
+      // entry holds lands on a figure the Log button refuses. Only upward — lowering an
+      // entry stored over the limit steps down from where it is, not down to the ceiling.
+      const raw = current + direction * size
+      setText(String(+Math.max(0, direction > 0 ? Math.min(ceiling, raw) : raw).toFixed(1)))
+      setRefused(false)
+    },
+    // Both openers take the food as an argument rather than reading `selected`: the
+    // caller sets that in the same render, so the hook cannot see it yet. Both are
+    // stable, so an effect that opens an entry for editing can depend on one without
+    // re-running on every keystroke.
+    openOn,
+    openOnEntry,
+  }
+}

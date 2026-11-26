@@ -1,0 +1,520 @@
+# API changes
+
+Breaking changes to the HTTP API, recorded when they land so the next release's notes
+can carry them. Self-hosters and anyone driving the API directly are the audience — the
+first-party clients are updated in the same PR and never notice.
+
+Newest first. Delete an entry once it has shipped in a release whose notes mention it.
+
+**Recording an entry is part of the PR that breaks something, not part of cutting the
+release.** Everything between `v0.1.0-beta.6` and the entries below was reconstructed by
+auditing the diff at tag time, which found nine breaks where this file held none — and the
+one entry it did hold had already shipped, unannounced, a release earlier. A diff audit
+catches what the author knew and forgot; it cannot catch what the author never noticed.
+If your PR changes a status code, narrows an accepted value, or renames a response field,
+add the entry in that PR.
+
+## Custom exercises (additive, one behaviour change)
+
+A user can create exercises of their own, private to them. `GET /api/v1/info` gains `"custom_exercises": true`,
+which clients read to know the endpoints below exist.
+
+New, all protected:
+
+- `POST /exercises` and `PUT /exercises/:id` (full replace), body
+  `{name, muscle_group, equipment?, category?, secondary_muscles?, description?}`. `201`/`200` with the exercise.
+  `equipment` defaults to `body-only`, `category` to `strength`. Slugs must be ones the catalog uses
+  (`422 INVALID_TAXONOMY`, `params.field`): `muscle_group` and each of `secondary_muscles` one of
+  `abdominals abductors adductors biceps calves chest forearms glutes hamstrings lats lower-back middle-back neck
+  quadriceps shoulders traps triceps`; `equipment` one of `body-only barbell dumbbell machine cable kettlebells bands
+  medicine-ball e-z-curl-bar exercise-ball foam-roll other` (not `none`: `body-only` says it); `category` one of
+  `strength stretching plyometrics strongman powerlifting cardio olympic-weightlifting`. The single list is
+  `packages/shared/src/utils/customExerciseTaxonomy.json`. `409 EXERCISE_NAME_TAKEN` (per user, case-insensitive, among
+  non-archived), `409 CUSTOM_EXERCISE_LIMIT` (500 non-archived, `params.limit`), `403 EXERCISE_NOT_CUSTOM`
+  for a catalog row.
+- `POST /exercises/:id/archive`, `POST /exercises/:id/unarchive`: `200` with the exercise. Archiving hides it from
+  lists and pickers; workouts and programs keep it. Nothing is ever deleted.
+- `GET /exercises/:id/usage`: `{workouts, program_days}`, the caller's rows using it.
+- `POST /exercises/:id/merge`, body `{into_id}`: moves the caller's workout and program rows to the target and
+  archives the source. `{moved_workouts, moved_program_days, into}`. `400 INVALID_MERGE_TARGET` for itself, an
+  archived exercise or one the caller cannot see. A later workout or program write that still names the merged
+  exercise (a session begun before the merge) is stored against the merge target instead.
+- `GET /exercises?mine=true`: only the caller's non-archived custom exercises, honouring `q`, `muscle_group`,
+  `equipment`, `category`, `limit`, `page`.
+- `PUT /exercises/:id/photo`: one optional photo per custom exercise. `multipart/form-data`, field `photo`
+  (JPEG, PNG or WebP, decided by decoding, not by the part's `Content-Type`). `200` with the exercise. The route's
+  body cap is 10 MB (the default is 1 MB). The server re-encodes to JPEG (quality 85, long edge at most 1600,
+  never scaled up, transparency flattened on white), which drops EXIF and GPS, and makes a 192 px thumbnail.
+  `422 PHOTO_INVALID` (not a readable image, or no `photo` field), `413 PHOTO_TOO_LARGE` (over 10 MB, over 40
+  megapixels or a side over 12,000 px; refused from the header before decoding), `403 EXERCISE_NOT_CUSTOM`,
+  `404 EXERCISE_NOT_FOUND`. A replace changes `photo_id` and deletes the old files.
+- `DELETE /exercises/:id/photo`: removes the photo; idempotent `200` with the exercise.
+- `GET /exercises/:id/photo?size=thumb|full[&v=<photo_id>]` (default `full`): the caller's own photo as
+  `image/jpeg`, bearer auth (an `<img>` cannot send it, so clients fetch with the shared client). `404` for another
+  user's exercise, a catalog exercise or one with no photo. `Cache-Control: private, max-age=31536000, immutable`
+  when `v` equals the current `photo_id`, otherwise `private, no-cache`.
+
+`GET /info` also gains `"custom_exercise_photos": true`.
+
+Instructions (every exercise, catalog and custom):
+
+- `Exercise` gains `instructions`, a list of strings, always sent (`[]` when there are none). Catalog exercises
+  carry open-exercise-db's steps; a custom exercise carries its lines as the user typed them (trimmed, blank lines
+  dropped, numbering left alone). `description` stays and is kept in step: the numbered join for catalog rows, the
+  lines joined by `\n` for custom ones, so a client that only reads `description` is unchanged.
+- `POST /exercises` and `PUT /exercises/:id` accept `instructions`. When present (even `[]`) it wins and
+  `description` is derived from it; when absent, `instructions` is split from `description`. Limits: 30 lines
+  (`422 INSTRUCTIONS_TOO_MANY`), 300 characters each (`422 INSTRUCTION_TOO_LONG`), 2000 together
+  (`422 INSTRUCTIONS_TEXT_TOO_LONG`), no control characters (`422 INSTRUCTION_CONTROL_CHARS`; a tab is turned
+  into a space first). All carry `params.max` where there is one.
+- Migration: `exercises.instructions` and `exercise_translations.instructions` (JSON, default `[]`), filled once from
+  `description`.
+
+Creating safely:
+
+- `POST /exercises` accepts `client_id`, a lowercase UUID chosen by the client (`422 INVALID_CLIENT_ID` otherwise).
+  If the caller already has an exercise created with it, that exercise is returned with `200` and nothing is
+  created, so a retry after a lost response is safe (even at the 500 cap, or when its name would now clash).
+  Without it, every create is new, as before.
+- Names drop zero-width characters and turn tabs into spaces before trimming. `EXERCISE_NAME_TAKEN` compares
+  with Unicode case folding, so "Élan" and "élan" clash.
+
+Merging:
+
+- `GET /exercises/:id/usage?into=<id>` adds `shared_program_days`: program days that list both exercises.
+- `POST /exercises/:id/merge` adds `combined_program_days` to its result. A program day that listed both ends up with
+  one block: the first keeps its place, settings and superset and takes the other's sets after its own (numbered on);
+  a superset left with one member is unlinked. Logged workouts keep both blocks.
+
+Photos live in `exercise-photos/` beside the database (`<photo_id>.jpg` and `<photo_id>-thumb.jpg`), so backing up
+the data directory covers them. They are removed when replaced, removed, or their owner deletes the account; merging
+keeps the archived source's photo. Migration: `exercises.photo_id` (nullable, additive).
+
+`Exercise` gains `is_custom` and `archived` (always sent), `merged_into_id` (only when merged) and `photo_id` (only
+when the exercise has a photo). Exercises embedded in workouts and programs carry `is_custom` and `photo_id`.
+
+Behaviour change: without `mine`, `GET /exercises` returns catalog exercises only, so a client that does not know
+about custom exercises sees what it saw before. Another user's custom exercise answers `404 EXERCISE_NOT_FOUND`
+on `GET /exercises/:id` (and `/prs`, `/history`), and as an `exercise_id` in a workout or program write it answers
+`400 UNKNOWN_EXERCISES`.
+
+Downgrading: the migration replaces the unique index on `exercises(name)` with one that covers catalog rows only.
+An older binary's catalog upsert (`ON CONFLICT(name)`) fails against it, so roll back with a database backup
+taken before the upgrade, not by running the old image on the migrated file.
+
+## Refresh tokens are rotated and revocable; `POST /auth/logout` (additive, one behaviour change)
+
+Every refresh token now carries a `jti` the server remembers. `POST /auth/refresh` spends the token it
+is given and returns the next one, which clients already store. Tokens issued before this change have no
+`jti` and keep working until their first refresh, which swaps them for a tracked one.
+
+- Presenting a token that was already rotated within 30 seconds is served again (a retry after a lost
+  response is not theft).
+- Presenting one rotated longer ago answers `401 SESSION_EXPIRED` and ends **every** session of that
+  account (its `token_version` moves on), access tokens included; the owner signs in again.
+- `POST /auth/logout` with `{"refresh_token": "..."}` revokes that token (`200 {"logged_out": true}`; an
+  invalid or unknown token also answers 200). Access tokens already issued run out their own hour.
+  Afterwards `/auth/refresh` with that token answers `401 SESSION_INVALID`.
+
+## `/auth/login`, `/auth/register`, `/auth/refresh`, `/auth/logout` are rate limited (additive)
+
+Per client address, 10 requests at once then 10 a minute, separately for each route. `/auth/login` also
+allows 5 at once then 5 a minute per account email. Over the limit: `429 RATE_LIMITED` with a
+`Retry-After` header in seconds. The client address is the socket's, or `X-Forwarded-For` only when the
+peer is loopback or a private address (the bundled nginx); a reverse proxy on a public address in front of
+Lyftr must therefore sit on a private network with it, or every client looks like one address.
+
+## Request bodies are capped (breaking for oversized requests)
+
+Bodies over 1 MB (4 MB for `PUT /active-session` and workout/program writes) answer
+`413 BODY_TOO_LARGE`. The server now also applies read/write/idle timeouts.
+
+## `/admin/*` requires an administrator (breaking)
+
+`POST /admin/sync-exercises` and `GET /admin/seed-status` answer `403 ADMIN_REQUIRED` unless the account's
+`is_admin` is set. On upgrade the earliest-created account (never the demo account) becomes the admin; on
+a fresh install the first account registered does. `GET /me` and the login/register `user` object gain
+`is_admin`. There is no endpoint to grant the role; do it in the database
+(`UPDATE users SET is_admin = 1 WHERE email = '...'`).
+
+## The demo account cannot be changed or deleted (breaking, `DEMO_MODE=true` only)
+
+With `DEMO_MODE` on, `PUT /me/password`, `PUT /me/email` and `DELETE /me` for `demo@lyftr.local` answer
+`403 DEMO_ACCOUNT_PROTECTED`. Boot resets its password to the published one if it was changed.
+
+## The server refuses to start in production with a published `JWT_SECRET` (breaking)
+
+`ENV=production` now fails at startup if `JWT_SECRET` is empty or equals either example value. A
+secret under 32 bytes logs a warning at startup. The root `.env.example` no longer ships a value;
+generate one with `openssl rand -hex 32`.
+
+## `DELETE /me` requires `current_password` (breaking)
+
+The body must be `{"current_password": "..."}`. Without it the request is refused: `400` with no body
+(`BODY_EMPTY`), `422` for an empty value, `401 WRONG_CURRENT_PASSWORD` for a wrong one. Nothing is
+deleted until the password checks out. The demo account (when `DEMO_MODE` is on) answers
+`403 DEMO_ACCOUNT_PROTECTED` before the password is looked at. The first-party app asks for the password
+on the delete sheet.
+
+## `GET /admin/seed-status` gains `catalog_source` and `catalog_generated_at` (additive)
+
+Two new fields on the exercise-library status: `catalog_source` is where the last clean sync read
+the catalog from, `"api"` or `"snapshot:<base url>"`, and `catalog_generated_at` is when that copy
+was generated (RFC 3339). Both are `null` until a clean sync has recorded them. No existing field
+changes. New env `OEDB_CATALOG_URLS` selects the static copies the sync reads before the API.
+
+## Workout and program exercises gain `superset_group` (additive)
+
+`GET /workouts/:id` and `GET /programs/:id` return `superset_group` on every exercise: an integer
+when it is in a superset, `null` when not. Rows sharing a label are one superset, labelled 1, 2, …
+in row order within a workout or a program day.
+
+`POST`/`PUT /workouts` and `/programs` accept it per exercise (1–999). A label used by rows that are
+not next to each other is refused with 422 `SUPERSET_NOT_CONTIGUOUS`; a label on one row only is
+stored as `null`. Requests that do not send the field are handled as before:
+
+- A create stores `null`.
+- An update in which **no** exercise carries the key keeps the labels already stored, matched by
+  exercise (and occurrence, for repeats), so a client that predates supersets does not unlink them
+  by editing. If its edit leaves a label split across rows that are no longer adjacent, that label
+  is dropped rather than the save refused. Send `"superset_group": null` explicitly to unlink.
+
+## `GET /api/v1/exercises` no longer lists exercises removed from the upstream catalog
+
+When a complete daily catalog pass no longer finds an exercise in open-exercise-db, it is left
+out of list and search results (the offline fallback included), but it is never deleted.
+`GET /exercises/:id`, its PRs and history, and every workout and routine that uses it still
+return it, and logging a workout with it still works. It comes back if upstream lists it
+again. A pass whose export is empty or holds under half the held catalog marks nothing and
+is reported as failed (`POST /admin/sync-exercises` answers 503 `EXERCISE_CATALOG_UNREACHABLE`),
+so it is retried. Translations in a language the catalog stops offering are removed after a
+successful locale discovery, unless that would drop more than half of the languages held, in which case nothing is removed; the English text is unaffected. `/admin/seed-status` `count`
+still includes hidden rows.
+
+## `GET /api/v1/admin/seed-status` — gains sync status (additive)
+
+`count` is unchanged. The response now also carries `syncing` (a catalog pass is running),
+`last_synced_at` (when the last clean pass ended), `last_attempt_at` (when the last pass
+started), `next_attempt_at` (when the scheduled pass runs next, null while one runs),
+`last_failed`, and `last_failure` (`"unreachable"` for an open-exercise-db outage,
+`"other"` for anything else, null when the last pass was clean). Times are RFC3339 UTC and
+may carry fractional seconds; unknown ones are null. `last_synced_at`, `last_attempt_at` and
+`last_failure` are kept in the database, so they survive a restart and are null only on an
+install that has never finished a pass; `next_attempt_at` and `syncing` are the running
+process's. A restart within 24 hours of a clean pass does not sync again: `next_attempt_at`
+is then 24 hours after `last_synced_at`. Callers that read only `count` see no change.
+
+## `POST /api/v1/admin/reset-exercises` removed; `POST /api/v1/admin/sync-exercises` imports the whole catalog
+
+`reset-exercises` no longer exists and answers 404, so a caller using it to drop unreferenced
+rows has nothing to call: the server now keeps the whole catalog. A background pass at boot
+and every 24h, retried with backoff on failure, imports every open-exercise-db exercise in
+English, then translations for every held exercise in each catalog language.
+
+`sync-exercises` runs that same pass on demand. It now fills an empty install, `refreshed`
+is the number of exercises the English pass recorded, and it covers every language, so it
+takes longer, and answers 409 `EXERCISE_SYNC_RUNNING` if a pass (this call or the daily one) is already running. A pass that fails partway keeps what it wrote and answers 503
+`EXERCISE_CATALOG_UNREACHABLE` (upstream) or a database error code. `GET
+/admin/seed-status` `count` is the whole catalog once a pass has completed.
+
+When the catalog lists fewer than half of the exercises the server holds, the pass cannot tell
+a real mass removal from a truncated read, so it hides nothing and answers 409
+`EXERCISE_CATALOG_SHRANK` (the scheduled pass logs the same and retries). Once the removal is
+confirmed, `POST /admin/sync-exercises?confirm_removals=true` accepts that one pass. The query
+parameter is additive; an empty catalog is still refused.
+
+## Every error response — gains a stable `code` beside `error`
+
+Additive: `error` is byte-identical to before and still authoritative for any caller that
+ignores `code`. Every error body is now `{"error": "...", "code": "UPPER_SNAKE"}`, with an
+optional `params` object when the sentence has variables. The first-party clients key their
+own (localized) wording on `code` and fall back to `error`.
+
+Codes (73). Every error has its own code with a fixed status; there is no generic
+`BAD_REQUEST`, `NOT_FOUND` or `SERVICE_UNAVAILABLE`.
+
+- Sign-in and session: `INVALID_CREDENTIALS`, `EMAIL_TAKEN`, `REGISTRATION_CLOSED`,
+  `PASSWORD_TOO_LONG`, `PASSWORD_UNCHANGED`, `WRONG_CURRENT_PASSWORD`, `ACCOUNT_NOT_FOUND`,
+  `PASSWORD_CHANGED_ELSEWHERE`, `PASSWORD_CHANGED_SIGN_IN_AGAIN`,
+  `EMAIL_CHANGED_SIGN_IN_AGAIN`, `SIGN_IN_REQUIRED`, `SESSION_INVALID`, `SESSION_EXPIRED`,
+  `WRONG_TOKEN_TYPE`.
+- Server: `INTERNAL_ERROR`, `DATABASE_BUSY`, `RATE_LIMITED`.
+- Validation (`422`, and the violation codes inside it): `VALIDATION_FAILED`, `REQUIRED`,
+  `INVALID_EMAIL`, `TOO_SHORT`, `TOO_LONG`, `TOO_MANY_ITEMS`, `BELOW_MINIMUM`,
+  `NOT_ABOVE_MINIMUM`, `ABOVE_MAXIMUM`, `NOT_AN_OPTION`, `TOO_MANY_WORKOUT_SETS`,
+  `TOO_MANY_PROGRAM_ROWS`, `INVALID_FIELD`.
+- Request body (`400`): `INVALID_FIELDS`, `NOT_A_NUMBER`, `NOT_TEXT`, `NOT_TRUE_OR_FALSE`,
+  `NOT_A_LIST`, `NOT_AN_OBJECT`, `BODY_WRONG_TYPE`, `BODY_NOT_JSON`, `BODY_EMPTY`,
+  `BODY_UNREADABLE`.
+- Resources: `INVALID_ID`, `INVALID_EXERCISE_ID`, `INVALID_PROGRAM_ID`, `INVALID_WORKOUT_ID`
+  (`400`); `ENTRY_NOT_FOUND`, `SAVED_FOOD_NOT_FOUND`, `EXERCISE_NOT_FOUND`,
+  `PROGRAM_NOT_FOUND`, `WORKOUT_NOT_FOUND` (`404`); `UNKNOWN_EXERCISES`, `NO_EXERCISE_CATALOG`
+  (`400`); `EXERCISE_CATALOG_UNREACHABLE` (`503`, with `Retry-After: 2`); `EXERCISE_SYNC_RUNNING`, `EXERCISE_CATALOG_SHRANK` (`409`).
+- Dates: `INVALID_DATE`, `INVALID_LOGGED_ON`, `INVALID_FROM_DATE`, `INVALID_TO_DATE` (`400`).
+- Food: `FOOD_NAME_TOO_LONG`, `FOOD_BRAND_TOO_LONG`, `SERVING_SIZE_TOO_LONG`,
+  `BARCODE_TOO_LONG`, `IMAGE_URL_TOO_LONG`, `SEARCH_TERM_REQUIRED`, `INVALID_BARCODE` (`400`);
+  `PRODUCT_NOT_FOUND` (`404`); `FOOD_DATABASE_TIMEOUT`, `FOOD_DATABASE_UNREACHABLE`,
+  `FOOD_SEARCH_UNAVAILABLE`, `BARCODE_LOOKUP_UNAVAILABLE` (`503`, with `Retry-After: 2`).
+- Settings: `DISPLAY_NAME_CONTROL_CHARS`, `TIMEZONE_EMPTY`, `UNKNOWN_TIMEZONE` (`400`).
+
+Parameters are JSON values: the length-limit codes carry `params.max` as a number,
+`UNKNOWN_TIMEZONE` carries `params.timezone`, and the request-body codes (`NOT_A_NUMBER`,
+`NOT_TEXT`, `NOT_TRUE_OR_FALSE`, `NOT_A_LIST`, `NOT_AN_OBJECT`) carry `params.field`, the
+dotted JSON path of the field (`exercises.sets.weight`).
+
+A `422` carries `params.violations`, one `{code, params}` per failed rule, with raw JSON
+field names and limits as JSON numbers:
+
+```json
+{
+  "error": "Email must be a valid email address. Password must be at least 8 characters in length.",
+  "code": "VALIDATION_FAILED",
+  "params": {
+    "violations": [
+      { "code": "INVALID_EMAIL", "params": { "field": "email" } },
+      { "code": "TOO_SHORT", "params": { "field": "password", "min": 8 } }
+    ]
+  }
+}
+```
+
+`PUT /api/v1/settings` and `PUT /api/v1/active-session` reject a field that breaks a rule
+with `400` `INVALID_FIELDS`, the `400` twin of `VALIDATION_FAILED`: the same sentence and the
+same `params.violations`, with the status those endpoints always had. Their body was
+previously `BAD_REQUEST`, which no release shipped.
+
+New codes may appear in later releases: treat an unknown `code` as "show `error`".
+
+## `GET /api/v1/food/search`, `GET /api/v1/food/barcode/:code` — optional `locale` names the product in the reader's language
+
+Both accept `?locale=<tag>` (`es`, `pt-BR`; only the primary language is used). Open Food Facts
+holds a name per language, and the server now asks for the reader's, then English, then the
+product's main name. A missing or malformed `locale` means `en`. The response shape is unchanged,
+but a caller that never sends `locale` can see a different name: English is now preferred over the
+product's main-language name, so a product whose `product_name` is Thai and whose English name is
+"Homogenized Milk" is now named the latter.
+
+Saving a favourite still matches on name and brand on the server, so a product saved without a
+`barcode` from a Spanish and an English search is two favourites. The shared client now sends the
+`barcode` when starring and matches on it first, which keeps barcoded products to one.
+
+## `POST /api/v1/auth/register` — an address differing only in letter case is a duplicate
+
+An address that differs from an existing account only in letter case (`Carter@example.com`
+beside `carter@example.com`) now answers `409` `That email is already registered.`. It used
+to answer `201` and create a second account.
+
+Only ASCII letters fold. Stored spellings are never rewritten.
+
+## `POST /api/v1/food`, `PUT /api/v1/food/:id` — `servings` is capped at 100
+
+Anything above 100 is rejected with `422`. There was no ceiling before.
+
+A single diary entry with 500 servings is a fat-fingered amount, not a meal, and it
+dominates every total and chart it appears in for the rest of that day. `servings` is the
+right thing to bound rather than the gram amount the client collects, because the
+multiplier is what the macros are scaled by.
+
+A caller sending `{"name":"Oats","meal":"breakfast","servings":500}` got a `201` and a
+stored row; it now gets a `422`. Bulk importers writing large multipliers are the
+realistic casualty — divide into separate entries, or scale the per-serving macros up and
+the count down.
+
+## `POST /api/v1/food`, `PUT /api/v1/food/:id`, `POST /api/v1/food/saved` — `name` and `brand` are trimmed before validation
+
+Two consequences, one from each side of the trim.
+
+A whitespace-only name is now refused. `{"name":"   ","meal":"breakfast"}` collapses to
+`""`, which trips the `required` rule that was always there, so it answers `422` where it
+used to answer `201` and store a row that rendered as nothing.
+
+A name with surrounding whitespace now round-trips differently: `{"name":"  Oats  ",
+"brand":" Quaker "}` returns `"Oats"` and `"Quaker"` in the response, not the string that
+was sent. A caller matching stored names against its own records by exact string will
+mismatch on anything it sent padded.
+
+This is what makes one food one favourite — `saved_foods` carries
+`UNIQUE(user_id, name, brand)`, and `"Oats"` and `"Oats "` are two rows to an index and
+one food to a person.
+
+## `POST /api/v1/food/saved` — a repeat star answers `200` with the existing row
+
+Starring a food that is already starred returns `200`, not `201`, and the body is the row
+that already existed rather than the one the request described.
+
+So `POST {"name":"Oats","brand":"Quaker","calories":400}` after an earlier save with
+`"calories":380` answers `200` carrying `calories: 380` and the first row's `id`. The
+request's macros are discarded. That reads as a write that did not write, and it is the
+one sharp edge in this change: there is no edit path on saved foods, so correcting a
+favourite's macros means deleting it and saving it again.
+
+A client branching on `201` to mean success stops seeing it. Treat `200` and `201` alike
+and read the `id` out of the body.
+
+Two more things follow from the unique index this added. Starring is now idempotent rather
+than duplicating, which is the point. And the boot migration that made the index possible
+**deletes duplicate rows**, keeping the lowest `id` in each `(user_id, name, brand)` group
+— so a caller holding an id that lost that dedupe gets a `404` from
+`DELETE /api/v1/food/saved/:id`. Duplicates could only arise from starring the same food
+twice, so at most they differed in macros from two search hits for one product.
+
+## `GET /api/v1/exercises` — taxonomy filters and values are slugs
+
+`equipment`, `category` and `muscle_group` are hyphenated and lower-case now, in the
+filter and in the response, and a boot migration rewrites the stored values in place.
+
+The old values match nothing. `?equipment=body only` returned hundreds of rows and now
+returns `[]` — a `200` with an empty list, not a `400`, so a caller gets silence rather
+than an error. The full set that moved:
+
+| was | is |
+|---|---|
+| `equipment=body only` | `body-only` |
+| `equipment=e-z curl bar` | `e-z-curl-bar` |
+| `equipment=medicine ball`, `exercise ball`, `foam roll` | `medicine-ball`, `exercise-ball`, `foam-roll` |
+| `equipment=` (empty) | `none` |
+| `category=olympic weightlifting` | `olympic-weightlifting` |
+| `muscle_group=lower back`, `middle back` | `lower-back`, `middle-back` |
+
+The strings inside `secondary_muscles` read as slugs too. One vocabulary, in the query and
+in the payload, so a value out of a response can go straight back into a filter.
+
+## `GET /api/v1/exercises`, `GET /api/v1/exercises/:id` — the catalog is served live from open-exercise-db
+
+The 800-row copy of free-exercise-db that used to be seeded into the database on first
+boot is gone. Exercises are now queried from an open-exercise-db instance and cached
+locally as they are read.
+
+For a third-party caller this is a different dataset behind the same two routes: different
+names, different ids, different `description`, and `image_url` rebased onto the upstream
+instance. Three specifics worth planning for:
+
+- A fresh install starts with an empty table and fills as searches run, instead of
+  answering with the whole library after a background seed.
+- Rows are refreshed on read. `GET /api/v1/exercises/:id` for an id stored at beta.6 can
+  return a different `description` and `image_url` under the same id, because
+  materialising an upstream row upserts over the cached one.
+- Results are no longer `ORDER BY name` when they come from upstream — they arrive in the
+  order the catalog returned them. A caller that relied on alphabetical ordering must sort
+  its own, and note the ordering differs depending on whether the upstream was reachable.
+
+`exercise_id` foreign keys are unaffected: nothing deletes a row that workout or program
+data references.
+
+## `POST /api/v1/admin/sync-exercises` — `{"synced","total"}` became `{"refreshed"}`, and it no longer imports
+
+Response fields `synced` and `total` are gone, replaced by `refreshed` — the number of
+cached rows that picked up an upstream edit.
+
+It is not a re-import any more. It re-reads rows this instance already holds; it does not
+populate an empty one. A caller using this to fill a fresh install gets `{"refreshed":0}`
+and an instance that is still empty — search populates the cache now, so there is nothing
+to call. New failure mode: `400` with "This server has no exercise catalog configured."
+when no upstream is set.
+When the upstream is configured but cannot be reached, or answers with an error, it answers
+`503` `EXERCISE_CATALOG_UNREACHABLE` "Couldn't reach the exercise catalog."; it used to
+answer `400` "The request couldn't be read."
+
+## `POST /api/v1/admin/reset-exercises` — `{"reset","message"}` became `{"cleared"}`, and it no longer re-seeds
+
+Response fields `reset` and `message` are gone, replaced by `cleared`, a count.
+
+The behaviour inverted. It used to wipe the `exercises` table and re-seed in the
+background; it now deletes only cached rows that nothing references, and re-seeds nothing.
+A caller using it as "rebuild my exercise library" gets a partly-emptied cache and no
+rebuild. That is the safe direction — the old version wiped rows that workout history
+pointed at — but it is not the same operation.
+
+## `GET /api/v1/admin/seed-status` — `in_progress` removed
+
+The body is `{"count": N}`. There is no `in_progress` any more, because there is no
+background seed to be in the middle of.
+
+A caller polling `data.in_progress` to wait for a seed to finish now reads `undefined`
+forever and never exits its loop. `count` survives the rename but answers a different
+question: how many catalog rows this instance has cached, not how large the library is.
+
+## `POST /api/v1/auth/refresh` — a structurally valid refresh token can be refused
+
+Refresh was stateless: a token with a good signature and `type: "refresh"` minted a new
+pair. It is now checked against the account's token version, so two requests that returned
+`200` return `401`:
+
+- A refresh token for an account deleted since it was issued. It used to keep minting
+  access tokens for the remainder of its 30 days.
+- Any refresh token issued before that account's password changed, whether through
+  `PUT /api/v1/me/password` or the `reset-password` CLI. Changing a password is now
+  supposed to end other sessions, and that is the mechanism.
+
+Tokens issued before this release survive the upgrade itself: they decode with no version
+claim, which is normalised to match the column default. This is a deliberate security fix,
+but it is a behaviour change a caller can observe, and a client holding a long-lived
+refresh token must handle `401` by signing in again rather than retrying.
+
+---
+
+## Already shipped, unannounced
+
+### `GET /api/v1/weight` — `from` / `to` accept a calendar day only
+
+**Shipped in `v0.1.0-beta.6`, whose notes do not mention it.** It is kept here rather than
+deleted because the file's rule is to delete an entry once a release's notes have carried
+it, and nothing has. Fold it into the next release's notes as a late correction, then
+delete it; do not present it as new.
+
+Both bounds must be `YYYY-MM-DD`, and anything else is rejected with `400`.
+
+Previously the endpoint accepted either a bare day or a full RFC3339 timestamp, and a
+malformed bound was ignored rather than refused — so a typo silently returned the whole
+history instead of the window that was asked for.
+
+The two modes answered the same question through different columns: the day mode filters
+on the day a row is filed under, the timestamp mode filtered on the instant. Those agree
+until a user changes timezone, which is exactly when a range query matters. No in-tree
+client ever sent the timestamp form.
+
+A third-party caller sending `from=2026-04-25T12:00:00Z` gets a `400` and should send
+`from=2026-04-25`. Ignoring a bad bound was itself a bug — answering a narrow question
+with the entire history reads as data loss in reverse — so the rejection is deliberate.
+
+---
+
+## Not breaking, but visible
+
+Not entries — nothing to fix on a caller's side — but worth a line in the notes because
+somebody will see the change.
+
+- **A revoked access token now answers `401` on the next request.** The auth middleware
+  checks the token's session version against the account on every request, so a deleted
+  account, or a session ended by a password or email change, is rejected on its next request
+  instead of lingering until the token expires (an hour by default; reads used to come back empty and writes
+  failed with a `500`). Clients already read a `401` as "try a refresh", and the refresh
+  fails the same check, so they sign out. A caller holding a long-lived access token for a
+  deleted or revoked account will now see the `401`.
+- **Sign-in matches the address case-insensitively**, returning the spelling stored at
+  registration. An install that already holds case-variant accounts keeps both: each still
+  signs in with its exact spelling, and the boot log names them;
+  `lyftr-api delete-account <exact address>` removes the one you do not want.
+- **Every error message was rewritten into a sentence.** No status code, route, field name
+  or field type moved. A caller regex-matching error *strings* will break, but error
+  wording is not part of the contract and never was.
+- **`serving_size` on food search and barcode results** reads `"100 g"` or `"100 ml"`
+  instead of `"per 100g"`. A display label; the macro figures behind it are unchanged.
+- **`DEMO_MODE` no longer defaults on in development.** A deployment default rather than an
+  HTTP contract, and the published config docs already said `false`, but a dev instance
+  that relied on signing in as `demo@lyftr.local` must now set `DEMO_MODE=true`.
+- **`locale` on exercise text.** `GET /exercises`, `GET /exercises/:id`, the workout reads
+  and writes and the program reads and writes accept an optional `locale` query parameter
+  (a BCP-47 tag such as `es` or `es-MX`). Exercise `name` and `description` come back in
+  that locale where this instance holds a translation, falling back field by field to the
+  base language and then to English. With no `locale`, or a malformed one, responses are
+  unchanged: English, status `200`. Local search also matches translated names in that
+  locale.
+  At startup and every 24 hours after, the instance re-reads every exercise it already holds
+  in every language the catalog lists at oedb's `/api/v1/meta/locales`, English included:
+  English through one export request, every other language with one request per 100
+  exercises. That is how workout and program history follow a language switch and how
+  upstream corrections arrive. No request triggers this pass or waits for it, and it adds no
+  exercises the instance did not already hold. If the catalog cannot be reached, the pass is
+  retried at the next interval and responses are served from what is already held. Nothing
+  changes for an instance with no catalog configured.

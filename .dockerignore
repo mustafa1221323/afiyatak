@@ -1,0 +1,51 @@
+# Applies to every build whose context is the repo root: apps/app/Dockerfile.web (the
+# docker-compose and CI frontend build) and fly/Dockerfile (via `flyctl deploy`).
+#
+# Why this file has to exist. BuildKit reads .dockerignore from the *context root*, and
+# both Dockerfiles are rooted here. With nothing to exclude, two things happen, both
+# measured on this repo:
+#
+#   1. The context balloons.        15.85 kB / 0.3s  ->  38.74 MB / 25.8s
+#   2. A `COPY` of a workspace overlays the host's node_modules on top of the one
+#      `npm ci` just built INSIDE the image. Node resolves the nearest node_modules
+#      first, so the host copy then wins — and a host-built native binary would be the
+#      wrong platform for the image.
+#
+# Do NOT exclude backend/, packages/ or fly/ — all three are copied by fly/Dockerfile.
+
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+
+.git
+.github
+.claude
+.vscode
+.idea
+
+# Test/build output
+apps/app/test-results
+apps/app/playwright-report
+apps/app/e2e/.auth
+apps/app/.expo
+apps/app/android
+apps/app/ios
+
+# Local runtime state — the DB is a Fly volume in production
+# Patterns without **/ only match at the context root, so `data` alone never covered
+# backend/data, where the dev stack keeps a copy of the production database
+# (prod-snapshot/) and the dev JWT secret. `flyctl deploy` uploads this context.
+**/data/
+**/*.db
+**/*.db-*
+**/prod-snapshot
+**/.dev-jwt
+
+# Docs and design assets: nothing in any image reads these
+docs
+design
+releases
+**/*.md
+!README.md

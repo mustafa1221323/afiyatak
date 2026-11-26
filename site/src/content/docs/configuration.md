@@ -1,0 +1,229 @@
+---
+title: Configuration
+description: Lyftr environment variables and the self-hosting gotchas.
+---
+
+All configuration lives in a `.env` file at the project root.
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JWT_SECRET` | *required* | Min 32-character secret for signing auth tokens. |
+| `CORS_ORIGIN` | `http://localhost` | Comma-separated allow-list of client origins. Use `*` to allow any (the API is Bearer-token based, no cookies). |
+| `PORT` | `80` | Host port for the web interface. |
+| `BACKEND_ORIGIN` | `backend:3000` | Docker **service name**:port the frontend proxies `/api` to — not a host IP. Only change the port, to match a custom backend `PORT`. |
+| `REGISTRATION` | `first-user` | Who may create an account: `open`, `first-user`, or `closed`. See below. |
+| `DEMO_MODE` | `false` | Seeds the demo account and sample data. Leave off — its password is public. |
+| `OEDB_BASE_URL` | hosted instance | The open-exercise-db API the exercise catalog falls back to, and searches. Set it to use a catalog you host. See [Exercise Library](../exercise-library/). |
+| `OEDB_CATALOG_URLS` | hosted copies | Comma-separated static copies of the catalog, tried in order before the API. Unset uses the hosted copies, unless `OEDB_BASE_URL` is set to something else, which means none. `off` skips them. See [Exercise Library](../exercise-library/). |
+
+## Locking down registration
+
+The compose file starts in `first-user` mode: the first signup claims the instance and everyone
+after is refused. (The backend binary on its own still defaults to `open`, so a bare `go run .`
+accepts anyone.) That is the right start, but not the right resting place, as explained below.
+To change it, set `REGISTRATION` in your `.env` and restart:
+
+```bash
+REGISTRATION=closed
+```
+
+```bash
+docker compose up -d          # no rebuild — it is read at startup
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `open` | Anyone can sign up. What every version before this one did, and still the backend's own default outside compose. |
+| `first-user` | The compose default. Open only while no account exists. The first person to register claims the instance; everyone after gets a 403. |
+| `closed` | Nobody can register. Where you should end up. |
+
+**`first-user` is a setup mode, not a resting state.** Use it for a fresh install — a plain
+on/off switch would make you choose between starting open, and racing whatever scanner finds
+your hostname, and starting closed, unable to create your own account at all. Then **switch to
+`closed` once you have signed up**, for the reason below.
+
+:::caution[Why `first-user` is not somewhere to stay]
+`first-user` decides by asking whether the users table is empty — and that table lives on your
+data volume. If the volume ever fails to mount, or you run `docker compose up` from a different
+directory (which silently creates a new, empty `./data`), the instance looks brand new and
+registration opens again. Immich shipped the same design and had exactly this reported: a
+reboot before the disk was mounted let anyone register as the admin
+([immich-app/immich#24479](https://github.com/immich-app/immich/issues/24479)).
+
+No setting stored *in* the database can protect against this, because it would be missing for
+the same reason. `REGISTRATION=closed` lives in your `.env`, so it survives.
+
+While `first-user` is on and no account exists, the backend says so on every start:
+
+```
+NOTICE: REGISTRATION=first-user and no accounts exist yet — registration is OPEN until
+the first one is created. If this instance already had an account, its data volume is
+not mounted: stop it before someone else claims it.
+```
+
+If you see that on an instance you have already signed up on, your data is not where the
+container is looking. Stop it before fixing the mount.
+:::
+
+A typo is a startup failure, not a fallback: `REGISTRATION=frst-user` refuses to boot rather than
+quietly leaving you wide open. Check `docker compose logs backend` if the container will not start.
+
+This is enforced by the API, not the interface. The apps also hide the "Create account" link when
+the server reports registration closed, but that is politeness — the 403 is the lock.
+
+## Changing your password
+
+**Settings → Account → Password**, on the web app and in the Android app. It asks for your current
+password, so a stolen session alone cannot lock you out of your own account.
+
+The web form has its own address, `/settings/password`, and `/.well-known/change-password`
+redirects to it. That is the [W3C Change Password URL](https://w3c.github.io/webappsec-change-password-url/),
+so Safari's Keychain, Chrome's Password Checkup and 1Password can send you straight to the form
+instead of dropping you on the front page. Nothing to configure — the bundled nginx serves the
+redirect. Behind your own reverse proxy, pass the path through to the frontend like any other
+route.
+
+### Password length
+
+Between 8 characters and 72 **bytes**. The minimum is Lyftr's; the maximum is bcrypt's, which
+refuses anything longer rather than silently truncating it.
+
+72 bytes is 72 ordinary characters, but accented letters cost two and most emoji cost four — so a
+19-character emoji passphrase is already over. Both apps say so while you type rather than on
+submit. Worth knowing if your password manager generates long passwords: cap it at 72.
+
+Changing it **signs you out everywhere else**. The device you changed it on stays signed in. That
+is deliberate — a password change is what you reach for when you think someone else has a session,
+so it has to actually end their session. Sign back in on your other devices with the new password.
+
+Other devices stop on their next request to the server: it checks every request against the account's
+current session version, so a device that was signed out gets a 401, fails to refresh, and drops to
+the sign-in screen. A device that cannot reach the server at that moment, say on poor wifi, stays on
+its old screens until it can. `JWT_EXPIRY` only sets how often a healthy session re-mints its access
+token, not how long a revoked one lingers.
+
+## Changing your email
+
+**Settings → Account → Email**, on the web app and in the Android app. Like a password change it
+asks for your current password, so a stolen session alone cannot take the address over. The web
+form is at `/settings/email`.
+
+You can change it to any address no other account holds. Letter case does not count as a
+difference, so `Carter@example.com` is taken if `carter@example.com` is registered, but you can
+change the case of your own address. The address is stored exactly as you type it.
+
+Like a password change it **signs you out everywhere else**. The device you changed it on stays
+signed in, and you sign in with the new address from now on. The old one stops working at once.
+Lyftr cannot email the old address, so ending the other sessions is how a change made from a session
+that was not yours gets contained. Other devices stop on their next request to the server, as with a
+password change. Changing only the letter case, say `carter@` to `Carter@`, is the
+one exception: sign-in already ignores case, so nothing needs containing and no session ends.
+
+## If you forget your password
+
+There is no self-service reset. Nothing here can email you a link, and an instance with no mail
+server could not send one. Recovery belongs to whoever has a shell on the server — which, since you
+self-host, is you:
+
+```bash
+docker compose exec backend ./lyftr-api reset-password you@example.com
+```
+
+It prompts for the new password twice, with no echo, and prints:
+
+```
+Password reset for you@example.com.
+Every existing session for that account has been signed out.
+```
+
+The account and everything in it are untouched — only the password changes.
+
+The password is prompted for rather than passed as a flag, so it never reaches your shell history
+or the container's process list.
+
+If you need it unattended, pipe it in. Read it into a variable first rather than typing it into the
+command — `echo 'your-new-password' | ...` puts the password straight into your shell history, which
+is the thing the prompt exists to avoid:
+
+```bash
+read -rs NEWPW
+docker compose exec -T backend ./lyftr-api reset-password you@example.com <<< "$NEWPW"
+unset NEWPW
+```
+
+Piped input skips the confirmation prompt — there is nothing to type twice — so whatever arrives on
+stdin becomes the password, subject only to the same 8-character minimum and 72-byte maximum
+the apps enforce.
+
+Sessions are signed out because a reset is often prompted by someone else having got in, and a new
+password is worthless while their existing token still works.
+
+:::caution
+**Do not delete the account and sign up again.** `users` cascades — the row takes every workout,
+meal and weight entry with it. Under `REGISTRATION=closed` it also leaves you permanently locked
+out, since nothing would let you register the replacement.
+:::
+
+If the instance will not start at all, restoring `lyftr.db` from a backup predating the password
+change also works, at the cost of everything logged since — see [Backups](/backups/).
+
+## Deleting an account from the server
+
+An account can be removed from the server's shell, for the case where nobody can (or should) sign in
+to it:
+
+```bash
+docker compose exec backend ./lyftr-api delete-account you@example.com
+```
+
+It prints what will be deleted — workouts, sets, food and weight entries, routines, saved foods —
+and asks you to type the address again. Anything else aborts with nothing deleted. The address must
+match letter case exactly; if it does not, the command lists the spellings it found and deletes
+nothing.
+
+If an upgrade's boot log says some accounts differ only in letter case, this is how to remove the one
+you do not want. The case-insensitive index is created on the next start.
+
+If it is the only account, the command warns first: under `REGISTRATION=first-user` whoever registers
+next becomes the owner, and under `REGISTRATION=closed` nobody can sign in or register. Take a backup
+before you run it — see [Backups](/backups/). A device still signed in to the deleted account is signed out on
+its next request to the server.
+
+Piping the exact address also works, with `-T`: `echo you@example.com | docker compose exec -T backend ./lyftr-api delete-account you@example.com`.
+
+## The demo account
+
+Every version before this one seeded `demo@lyftr.local` with a password published in this
+documentation, on **every** install. That account is now behind `DEMO_MODE`, which is off unless
+you ask for it.
+
+If you are upgrading, the account you already have is not deleted — deleting it might take real
+workouts with it. The backend logs a warning at startup while it exists. To remove it: sign in as
+`demo@lyftr.local`, then **Settings → Delete account**. If that account has real data in it, change
+its password instead — that closes the published-credential hole without losing anything.
+
+Turning registration off does nothing about this: a published password is a working login whatever
+`REGISTRATION` says.
+
+## The `BACKEND_ORIGIN` gotcha
+
+`BACKEND_ORIGIN` is resolved over the internal Docker network, so it **must** use the backend's
+service name (`backend`), not your server's host or LAN IP.
+
+The default compose only *exposes* the backend on the Docker network — it isn't published to the
+host — so pointing `BACKEND_ORIGIN` at something like `192.168.1.10:3000` produces:
+
+```
+502 Bad Gateway
+connect() failed (111: Connection refused)
+```
+
+If you run the backend on a custom `PORT`, change **only** the port (e.g. `backend:3008`).
+
+## Refreshing exercises
+
+The server refreshes the exercise catalog by itself at startup and every 24 hours. To refresh now,
+go to **Settings → Exercise Library** and press **Refresh cached**. It never touches your workout
+data. See [Exercise Library](../exercise-library/).

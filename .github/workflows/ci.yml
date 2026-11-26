@@ -1,0 +1,586 @@
+name: CI
+
+# Backend (Go) + mobile (Expo, native and web export) + shared package tests, the integrated
+# Playwright e2e, image builds, and the Fly deploy — one workflow, gated by a shared
+# `changes` job so it never skips itself the way a top-level `paths:` trigger filter
+# would (that's the mobile-ci.yml pattern this replaced — see git history — and it has
+# a real GH Actions trap: a workflow that's skipped-at-the-trigger-level rather than
+# skipped-at-the-job-level can leave a required check permanently "waiting for status"
+# on PRs that don't touch its paths). docs/markdown-only changes still skip the whole
+# run via `paths-ignore`, since nothing here depends on them.
+#
+# Per-job filtering (the `changes` job + dorny/paths-filter): a backend-only change skips
+# the mobile jobs, a mobile-only change skips the Go + version-smoke jobs,
+# and so on. The image-build and deploy jobs stay eligible regardless (on branches other
+# than main the image builds run in the pull_request run only, as the build-*-pr jobs,
+# alongside the tests rather than after them) — the main/tag ones are guarded
+# with `!failure() && !cancelled()` so a *skipped* (not failed) test dependency doesn't
+# cascade into skipping the build/deploy gate. On main/tags every test job runs
+# unconditionally, so filtering never weakens deploys.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  # No paths-ignore on pull_request, deliberately. A workflow skipped at the TRIGGER
+  # leaves its checks Pending forever, and main requires these checks — so a
+  # markdown-only PR would be permanently unmergeable. The `changes` job below already
+  # filters per job, so a docs-only PR still runs nothing but that one cheap job; it just
+  # runs it, and reports the checks as skipped, which counts as passed.
+  # `push` keeps its paths-ignore: no branch protection depends on those runs.
+  pull_request:
+    branches: [main]
+
+# Least privilege — nothing in this workflow needs to write via GITHUB_TOKEN (image pushes and
+# the Fly deploy use their own secrets). Matches mobile-ci.yml's prior explicit read-only scope,
+# now applied workflow-wide since mobile checks run here too.
+permissions:
+  contents: read
+
+# A newer commit on a branch or PR cancels the run it supersedes. main and tags get a group
+# of their own per run, so nothing there is ever cancelled or held pending (every main
+# commit still builds, pushes and deploys). Push and pull_request runs stay in separate
+# groups: both report the required checks on the same head SHA, and GitHub does not
+# document which of two same-named checks a ruleset reads, so neither may cancel the other.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  # Which domains changed? Gates the fast unit-test jobs below so a backend-only PR doesn't
+  # run the mobile suites (and vice-versa). ci.yml is in both filters so workflow edits run all.
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read   # dorny/paths-filter reads the PR file list via the API
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              # utils/codes_test.go pins the registry to the client catalog.
+              - 'packages/shared/src/i18n/locales/en.json'
+              - 'fly.toml'
+              - 'fly/**'
+              - 'docker-compose.yml'
+              - '.github/workflows/ci.yml'
+            mobile:
+              - 'apps/app/**'
+              - 'packages/shared/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'patches/**'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
+
+  test:
+    name: Go unit tests
+    needs: changes
+    # Run when backend changed, or always on main/tags (never weaken the deploy gate).
+    if: >-
+      needs.changes.outputs.backend == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: backend/go.sum
+      - run: cd backend && go mod download
+      # ./... not a hand-listed subset: this job ran 3 packages of 7, so utils/,
+      # stores/, config/ and oedb/ were invisible here. utils/ owns every error
+      # sentence the API emits, and this PR adds 223 lines of tests to it that
+      # would otherwise never gate a merge. Measured hermetic (httptest only, no
+      # outbound hosts) and ~23s total; -timeout is per package, and the slowest
+      # is 15s.
+      - run: cd backend && go test ./... -timeout 30s
+
+  mobile:
+    name: Mobile + shared checks
+    needs: changes
+    if: >-
+      needs.changes.outputs.mobile == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      # One workspace install covers mobile + packages/shared.
+      - run: npm ci
+
+      # --- packages/shared (jest + tsc) ---
+      - run: npm run shared:type-check
+      - run: npm run shared:test
+
+      # --- mobile (Expo app) ---
+      - run: npm run type-check -w @lyftr/mobile
+      - run: npm run lint -w @lyftr/mobile
+      - run: npm run test -w @lyftr/mobile -- --ci
+
+  web-export:
+    name: Web export
+    needs: changes
+    if: >-
+      needs.changes.outputs.mobile == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      - name: Export web bundle
+        run: npm run export:web -w @lyftr/mobile
+
+      - name: Check the export
+        run: |
+          test -f apps/app/dist/index.html || { echo "apps/app/dist/index.html missing"; exit 1; }
+          grep -q '<script' apps/app/dist/index.html || { echo "index.html has no <script> tag"; exit 1; }
+          for pat in 'name="description"' 'name="theme-color"' 'name="color-scheme"' 'rel="manifest"' 'rel="apple-touch-icon"' 'rel="icon"' 'noindex'; do
+            grep -q "$pat" apps/app/dist/index.html || { echo "index.html is missing $pat"; exit 1; }
+          done
+          test -f apps/app/dist/manifest.json || { echo "apps/app/dist/manifest.json missing"; exit 1; }
+          # polyfills.web.ts leaves the Hermes-only intl-pluralrules out; browsers ship Intl.PluralRules.
+          # Match that package's own error strings, not 'PluralRules', which i18next contains legitimately.
+          if grep -rlE --include='*.js' 'Not a valid plural type|select\(\) called on incompatible' apps/app/dist; then
+            echo "intl-pluralrules shipped to web"; exit 1
+          fi
+          # Pins the zustand CJS override in apps/app/metro.config.js: its ESM build uses
+          # import.meta, which throws when the bundle runs as a classic script.
+          if grep -rl --include='*.js' 'import\.meta' apps/app/dist; then
+            echo "import.meta found in the exported bundle"; exit 1
+          fi
+
+      - name: Report bundle size
+        run: |
+          {
+            echo "### Web export size"
+            echo
+            echo "Entry: \`$(grep -o '[^"]*_expo/static/js/web/entry-[^"]*\.js' apps/app/dist/index.html | head -n1)\`"
+            echo
+            echo "| File | Raw (bytes) | Gzip (bytes) |"
+            echo "|---|---:|---:|"
+            raw_total=0; gz_total=0
+            while IFS= read -r f; do
+              raw=$(wc -c < "$f"); gz=$(gzip -c "$f" | wc -c)
+              raw_total=$((raw_total + raw)); gz_total=$((gz_total + gz))
+              echo "| \`${f#apps/app/dist/}\` | $raw | $gz |"
+            done < <(find apps/app/dist -type f \( -name '*.js' -o -name '*.css' \) | sort)
+            echo "| **Total** | **$raw_total** | **$gz_total** |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-export
+          path: apps/app/dist/
+          retention-days: 7
+
+      # Last, so a failing budget still leaves the size table and the artifact above.
+      # Budgets live in apps/app/perf-budget.json; the script fails the job when exceeded.
+      - name: Enforce bundle budget
+        run: node apps/app/scripts/bundle-budget.mjs
+
+  # The e2e gate: the Expo app's web export, served by the `frontend` image
+  # (apps/app/Dockerfile.web) and driven by the Playwright harness in apps/app/e2e.
+  # Three shards on three runners, each with its own compose stack; `e2e-app` below is the
+  # required check and passes only when both do.
+  e2e-shard:
+    name: Playwright E2E shard ${{ matrix.shard }}/3
+    needs: changes
+    if: >-
+      needs.changes.outputs.backend == 'true' ||
+      needs.changes.outputs.mobile == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/')
+    # Not ubuntu-latest: that moved to 26.04. The browsers now run in the Playwright image,
+    # so this pin only holds the host (docker, compose) steady.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Create .env
+        run: |
+          echo "JWT_SECRET=ci-test-secret-$(openssl rand -hex 16)" >> .env
+          # Published on 8081, the harness's default (apps/app/e2e/config.ts).
+          echo "PORT=8081" >> .env
+          echo "CORS_ORIGIN=http://localhost,http://localhost:8081" >> .env
+          # compose defaults to first-user; globalSetup registers a probe account per run.
+          echo "REGISTRATION=open" >> .env
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          cleanup: false   # the hosted runner is discarded anyway; removing the builder cost ~15s
+
+      # `type=gha` from a plain `run:` step needs ACTIONS_RUNTIME_TOKEN and ACTIONS_RESULTS_URL,
+      # which only actions see; without them buildx used no cache at all (no CACHED step in any
+      # run). https://docs.docker.com/build/cache/backends/gha/
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      # Own scopes: build-backend/build-frontend write multi-arch caches, and builds sharing a
+      # scope overwrite each other. Every run reads; only main's push run writes (shard 1).
+      # A PR run can restore main's caches, so writing from branches bought little and cost
+      # ~95s of cache export on the critical path, plus GBs that pushed the repo past the
+      # 10 GB cache cap, where eviction takes main's entries too.
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache
+      #
+      # Browsers and their OS libraries come preinstalled in Playwright's own image, tagged to
+      # the exact @playwright/test in the lockfile. `install-deps` fetched ~114 MB from the
+      # runner's apt mirror, which at times trickled at ~80 KB/s and ran the job into its
+      # timeout before a test started. A pull is bounded and retried instead.
+      # https://playwright.dev/docs/docker
+      #
+      # npm ci and the image pull are mostly network-bound and the bake mostly CPU-bound, so
+      # both run in the background under the bake instead of after it.
+      - name: Build images, install deps, pull the Playwright image
+        timeout-minutes: 10   # above retry.sh's worst case (3 x 160s + 10s), so its own error shows
+        env:
+          WRITE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.shard == 1 }}
+        run: |
+          v=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
+          img="mcr.microsoft.com/playwright:v${v}-noble"
+          echo "PW_IMAGE=$img" >> "$GITHUB_ENV"
+
+          # The runtime token is for the cache only; npm ci's install scripts don't get it.
+          env -u ACTIONS_RUNTIME_TOKEN npm ci > "$RUNNER_TEMP/npm-ci.log" 2>&1 & npm_pid=$!
+          bash .github/scripts/retry.sh 3 150 docker pull -q "$img" > "$RUNNER_TEMP/pull.log" 2>&1 & pull_pid=$!
+
+          to=()
+          if [ "$WRITE" = true ]; then
+            to=(--set "backend.cache-to=type=gha,scope=lyftr-e2e-backend,mode=max"
+                --set "frontend.cache-to=type=gha,scope=lyftr-e2e-frontend,mode=max")
+          fi
+          docker buildx bake \
+            --set "backend.cache-from=type=gha,scope=lyftr-e2e-backend" \
+            --set "frontend.cache-from=type=gha,scope=lyftr-e2e-frontend" \
+            "${to[@]}" \
+            --load
+          echo "ACTIONS_RUNTIME_TOKEN=" >> "$GITHUB_ENV"
+
+          rc=0
+          wait "$npm_pid" || rc=$?
+          echo "::group::npm ci (exit $rc)"; cat "$RUNNER_TEMP/npm-ci.log"; echo "::endgroup::"
+          [ "$rc" -eq 0 ] || { echo "::error::npm ci failed (exit $rc)"; exit "$rc"; }
+          wait "$pull_pid" || rc=$?
+          cat "$RUNNER_TEMP/pull.log"
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+      # The compose healthcheck polls every 30s, so `--wait` always took 31s. CI-only override.
+      - name: Start stack
+        run: |
+          printf 'services:\n  backend:\n    healthcheck:\n      interval: 2s\n      retries: 30\n' > "$RUNNER_TEMP/compose.ci.yml"
+          # The oedb stub overlay keeps the stack off the hosted open-exercise-db, whose metered
+          # database every e2e boot used to sync in full (apps/app/e2e/oedb-stub/server.mjs).
+          # COMPOSE_FILE, so the later logs and guard steps see the same services.
+          f="docker-compose.yml:$RUNNER_TEMP/compose.ci.yml:apps/app/e2e/oedb-stub/compose.yml"
+          echo "COMPOSE_FILE=$f" >> "$GITHUB_ENV"
+          COMPOSE_FILE="$f" docker compose up -d --wait
+
+      # --network host: the stack is published on the runner's localhost:8081.
+      - name: Run E2E tests
+        run: |
+          docker run --rm --init --ipc=host --network host -e CI=true \
+            -v "$PWD:/work" -w /work/apps/app "$PW_IMAGE" \
+            npx playwright test --shard=${{ matrix.shard }}/3
+
+      # The backend falls back to the hosted oedb when OEDB_BASE_URL is empty, and a suite run
+      # that way passes. So prove where its boot sync went: the stub logs every request. A sync
+      # from the stub's snapshot reads the manifest and makes no export request.
+      - name: Assert the backend synced from the oedb stub
+        run: |
+          docker compose logs --no-color oedb-stub | grep -q 'GET /v1/manifest.json 200' || {
+            echo "::error::the backend never fetched the catalog from the oedb stub; are OEDB_BASE_URL and OEDB_CATALOG_URLS pointing at production?"
+            exit 1
+          }
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: playwright-report-app-${{ matrix.shard }}
+          path: |
+            apps/app/playwright-report/
+            apps/app/test-results/
+          retention-days: 7
+
+  # The required check. always(): a failed or cancelled shard must fail this job, not skip
+  # it, since a skipped required check counts as passing. When the filter skips e2e this
+  # job's own `if` skips it too, exactly as the single job used to be skipped.
+  e2e-app:
+    name: Playwright E2E (Expo app)
+    needs: [changes, e2e-shard]
+    if: >-
+      always() && (
+      needs.changes.outputs.backend == 'true' ||
+      needs.changes.outputs.mobile == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: All shards passed
+        env:
+          RESULT: ${{ needs.e2e-shard.result }}
+        run: |
+          echo "shards: $RESULT"
+          test "$RESULT" = success
+
+  version-smoke:
+    name: Version injection smoke test
+    needs: changes
+    if: >-
+      needs.changes.outputs.backend == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build backend image with a known version
+        run: docker build --build-arg VERSION=smoke-9.9.9 -t lyftr-backend:smoke ./backend
+      - name: Assert the binary reports the injected version
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm lyftr-backend:smoke --version)
+          echo "version output: $out"
+          echo "$out" | grep -q 'smoke-9.9.9'
+
+  # Size is reported, never enforced — the convention kubernetes/kubernetes uses, and the
+  # default of every size-labeller in the wild (CodelyTV ships fail_if_xl: false;
+  # oven-sh/bun has no size labels at all).
+  #
+  # A label is better feedback than a block or a comment: it shows in the PR list without
+  # notifying anyone, it is filterable, and it never has to be argued with. Some large
+  # PRs are legitimate — a vendored dependency, a migration, one mechanical rename across
+  # forty files — and a gate that has to be overridden teaches people to override gates.
+  #
+  # Thresholds are Kubernetes': XS 0-9, S 10-29, M 30-99, L 100-499, XL 500-999, XXL
+  # 1000+, "ignoring generated files". Lockfiles, build output and snapshots do not count;
+  # a lockfile refresh is thousands of lines nobody reads.
+  pr-size:
+    name: PR size
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # to apply the size label
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Label by reviewable churn
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          CHANGED=$(git diff --numstat "$BASE...$HEAD" --             . ':(exclude)**/package-lock.json' ':(exclude)**/*.lock'             ':(exclude)**/*.tsbuildinfo' ':(exclude)**/dist/**' ':(exclude)**/*.snap'             | awk '{ a += $1; d += $2 } END { print (a + d) + 0 }')
+
+          if   [ "$CHANGED" -lt 10 ];   then SIZE=XS
+          elif [ "$CHANGED" -lt 30 ];   then SIZE=S
+          elif [ "$CHANGED" -lt 100 ];  then SIZE=M
+          elif [ "$CHANGED" -lt 500 ];  then SIZE=L
+          elif [ "$CHANGED" -lt 1000 ]; then SIZE=XL
+          else SIZE=XXL
+          fi
+          echo "reviewable churn: ${CHANGED} lines -> size/${SIZE}"
+
+          # Replace any previous size label so the PR carries exactly one.
+          for old in XS S M L XL XXL; do
+            [ "$old" = "$SIZE" ] || gh pr edit "$PR" --remove-label "size/$old" 2>/dev/null || true
+          done
+          gh pr edit "$PR" --add-label "size/$SIZE"
+
+          # Past the point where a review stops being useful, say so once, in the run
+          # summary. Advisory: this job never fails.
+          if [ "$CHANGED" -gt 5000 ]; then
+            echo "::warning::This PR changes ${CHANGED} reviewable lines. Past 5000 the automated review is skipped entirely, and a diff this size is hard for anyone to hold in their head — consider splitting it."
+          fi
+
+  # main and tags push, so they wait for the tests. Still build even if a test dependency was
+  # *skipped* by filtering; only a genuine failure/cancel of a dependency should stop it.
+  build-backend:
+    name: Build & push backend image
+    needs: [test, e2e-app, version-smoke]
+    if: >-
+      !failure() && !cancelled() &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    # Job-level, so it replaces the workflow's read-only default: packages: write lets
+    # GITHUB_TOKEN push to ghcr.io. Only the two push jobs get it; the -pr jobs reuse the
+    # steps but not this block.
+    permissions:
+      contents: read
+      packages: write
+    steps: &build-backend-steps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0   # full history so `git describe --tags` resolves
+      - name: Resolve version
+        id: ver
+        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Every image below gets every tag, and build-push-action builds once and pushes the
+      # result to both registries, so GHCR adds a push, not a build.
+      # Tags: `vX.Y.Z[-beta.N]` is the release, fixed forever. `latest` is whatever main last
+      # built, not a release. `stable` is the newest release tag pushed: it moves
+      # only on a `v*` tag push, never on main, so an app-store listing that installs
+      # `:stable` gets releases and nothing in between. It includes betas while every
+      # release is one, and it follows push order, so re-pushing an older tag moves it back.
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        id: meta
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/lyftr-backend
+            ghcr.io/cawlumm/lyftr-backend
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ./backend
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          # push=false on PRs/feature branches — builds only (validates Dockerfile)
+          # push=true on main merge or version tag — publishes to Docker Hub
+          push: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+          cache-from: type=gha,scope=lyftr-backend
+          # Written from main/tags only, for the reason given at the e2e bake.
+          cache-to: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && 'type=gha,scope=lyftr-backend,mode=max' || '' }}
+
+  # A PR only validates that the images build (push is false), so nothing here waits on the
+  # tests: it starts with them instead of adding its ~4 min after them. Branch push runs skip
+  # it; the pull_request run for the same commit builds the same images.
+  build-backend-pr:
+    name: Build backend image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps: *build-backend-steps
+
+  build-frontend:
+    name: Build & push frontend image
+    needs: [test, e2e-app, mobile, web-export]
+    # Tolerate skipped (filtered) test deps; stop on real failure. Same event rule as build-backend.
+    if: >-
+      !failure() && !cancelled() &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:   # as build-backend: ghcr.io push for this job only
+      contents: read
+      packages: write
+    steps: &build-frontend-steps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        id: meta
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/lyftr-frontend
+            ghcr.io/cawlumm/lyftr-frontend
+          # Same images and tags as the backend; what each tag promises is noted there.
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          # The Expo export.
+          file: ./apps/app/Dockerfile.web
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          # push=false on PRs/feature branches — builds only (validates Dockerfile)
+          # push=true on main merge or version tag — publishes to Docker Hub
+          push: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=lyftr-frontend
+          cache-to: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && 'type=gha,scope=lyftr-frontend,mode=max' || '' }}
+
+  build-frontend-pr:
+    name: Build frontend image
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps: *build-frontend-steps
+
+  deploy-demo:
+    name: Deploy to Fly.io
+    needs: [test, e2e-app, version-smoke, mobile, web-export]
+    # main pushes run every test job (their `if` includes main), so this only deploys on a
+    # clean run; the failure/cancel guard keeps a filtered skip from ever cascading here.
+    if: ${{ !failure() && !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0   # full history so `git describe --tags` resolves
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - name: Deploy
+        run: flyctl deploy --remote-only --build-arg VERSION="$(git describe --tags --always)"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

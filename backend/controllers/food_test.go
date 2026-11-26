@@ -1,0 +1,2029 @@
+package controllers
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Cawlumm/lyftr-backend/db"
+	"github.com/Cawlumm/lyftr-backend/models"
+)
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+func insertFoodLog(t *testing.T, uid int64, name, meal string, calories, protein, carbs, fat float64, loggedAt time.Time) int64 {
+	t.Helper()
+	res, err := db.DB.Exec(
+		`INSERT INTO food_logs (user_id, name, meal, calories, protein, carbs, fat, fiber, servings, serving_size, barcode, image_url, logged_at, logged_on)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, '', '', '', ?, ?)`,
+		uid, name, meal, calories, protein, carbs, fat,
+		// Bound as time.Time, the way the stores do. Formatting to a string here
+		// wrote a row shape production never creates, which hid exactly the class of
+		// bug where a range comparison depends on the stored encoding.
+		loggedAt,
+		localDayFor(t, uid, loggedAt),
+	)
+	if err != nil {
+		t.Fatalf("insertFoodLog: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// localDayFor is the day a fixture row files itself under: the instant resolved in
+// the user's stored zone, which is exactly what the handlers do for a client that
+// sends no logged_on. Fixtures must derive it the same way production does — writing
+// a day the app would never write is how a test ends up asserting a behaviour that
+// does not exist.
+func localDayFor(t *testing.T, uid int64, instant time.Time) string {
+	t.Helper()
+	var zone string
+	if err := db.DB.QueryRow(`SELECT timezone FROM user_settings WHERE user_id = ?`, uid).Scan(&zone); err != nil {
+		zone = "UTC" // no settings row is normal for a freshly created test user
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		loc = time.UTC
+	}
+	return instant.In(loc).Format("2006-01-02")
+}
+
+func insertSavedFood(t *testing.T, uid int64, name string) int64 {
+	t.Helper()
+	res, err := db.DB.Exec(
+		`INSERT INTO saved_foods (user_id, name, brand, calories, protein, carbs, fat, fiber, serving_size, barcode) VALUES (?, ?, '', 100, 10, 10, 5, 2, '1 serving', '')`,
+		uid, name,
+	)
+	if err != nil {
+		t.Fatalf("insertSavedFood: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func otherUser(t *testing.T) int64 {
+	t.Helper()
+	res, err := db.DB.Exec(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, "other@example.com", "x")
+	if err != nil {
+		t.Fatalf("otherUser: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// offMockTransport rewrites all requests to the given httptest.Server, so
+// SearchFood and LookupBarcode hit a local handler instead of real OFF.
+type offMockTransport struct{ server *httptest.Server }
+
+func (tr *offMockTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r2 := r.Clone(r.Context())
+	r2.URL.Scheme = "http"
+	r2.URL.Host = strings.TrimPrefix(tr.server.URL, "http://")
+	return http.DefaultTransport.RoundTrip(r2)
+}
+
+func withOFFMock(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(handler)
+	prev := offClient
+	offClient = &http.Client{Transport: &offMockTransport{server: s}, Timeout: 5 * time.Second}
+	t.Cleanup(func() {
+		offClient = prev
+		s.Close()
+	})
+	return s
+}
+
+// ─── ListFoodLogs ─────────────────────────────────────────────────────────────
+
+func TestListFoodLogs_empty(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food", nil)
+	th.ListFoodLogs(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 0 {
+		t.Fatalf("expected empty list, got %d items", len(data))
+	}
+}
+
+func TestListFoodLogs_scopedByDateAndUser(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+
+	today := time.Now().UTC()
+	yesterday := today.AddDate(0, 0, -1)
+
+	insertFoodLog(t, uid, "Breakfast today", "breakfast", 400, 30, 50, 10, today)
+	insertFoodLog(t, uid, "Lunch yesterday", "lunch", 600, 40, 60, 15, yesterday)
+	insertFoodLog(t, other, "Other user today", "dinner", 500, 25, 55, 12, today)
+
+	date := today.Format("2006-01-02")
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food?date="+date, nil)
+	th.ListFoodLogs(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("expected 1 entry for today (own only), got %d", len(data))
+	}
+	entry := data[0].(map[string]any)
+	if entry["name"].(string) != "Breakfast today" {
+		t.Errorf("unexpected entry name: %v", entry["name"])
+	}
+}
+
+// ─── GetFoodLog ───────────────────────────────────────────────────────────────
+
+func TestGetFoodLog_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertFoodLog(t, uid, "Chicken breast", "lunch", 300, 50, 5, 8, time.Now())
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/"+fmt.Sprint(id), nil)
+	setParam(c, "id", fmt.Sprint(id))
+	th.GetFoodLog(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"].(string) != "Chicken breast" {
+		t.Errorf("unexpected name: %v", data["name"])
+	}
+}
+
+func TestGetFoodLog_ownershipEnforced(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+	id := insertFoodLog(t, other, "Secret meal", "dinner", 800, 60, 80, 30, time.Now())
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/"+fmt.Sprint(id), nil)
+	setParam(c, "id", fmt.Sprint(id))
+	th.GetFoodLog(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-user get, got %d", w.Code)
+	}
+}
+
+func TestGetFoodLog_invalidID(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/abc", nil)
+	setParam(c, "id", "abc")
+	th.GetFoodLog(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid id, got %d", w.Code)
+	}
+}
+
+// ─── LogFood ──────────────────────────────────────────────────────────────────
+
+func TestLogFood_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Oatmeal", "meal": "breakfast",
+		"calories": 350.0, "protein": 12.0, "carbs": 60.0, "fat": 6.0,
+		"fiber": 5.0, "servings": 1.0, "serving_size": "1 cup",
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"].(string) != "Oatmeal" {
+		t.Errorf("expected name Oatmeal, got %v", data["name"])
+	}
+	if data["calories"].(float64) != 350.0 {
+		t.Errorf("expected calories 350, got %v", data["calories"])
+	}
+	if data["fiber"].(float64) != 5.0 {
+		t.Errorf("expected fiber 5, got %v", data["fiber"])
+	}
+	if data["servings"].(float64) != 1.0 {
+		t.Errorf("expected servings 1, got %v", data["servings"])
+	}
+}
+
+func TestLogFood_defaultsServingsToOne(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Apple", "meal": "snacks",
+		"calories": 95.0, "protein": 0.5, "carbs": 25.0, "fat": 0.3,
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["servings"].(float64) != 1.0 {
+		t.Errorf("expected default servings=1, got %v", data["servings"])
+	}
+}
+
+// The numeric serving is what lets the clients offer "15 ml" instead of "0.15
+// servings", so it has to survive the write — and an entry written without one has to
+// read back as 0 rather than a guess, which is what every row logged before #171 is.
+func TestLogFood_roundTripsServingQuantity(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Olive Oil", "meal": "dinner",
+		"calories": 120.0, "fat": 14.0, "servings": 1.0,
+		"serving_size": "1 Tbsp (15 ml)", "serving_quantity": 15.0, "serving_unit": "ml",
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].(map[string]any)
+	if data["serving_quantity"].(float64) != 15.0 || data["serving_unit"].(string) != "ml" {
+		t.Errorf("expected 15 ml back, got %v %v", data["serving_quantity"], data["serving_unit"])
+	}
+
+	c2, w2 := newContext(uid, http.MethodPost, "/api/v1/food", map[string]any{
+		"name": "Toast", "meal": "breakfast", "calories": 80.0,
+	})
+	th.LogFood(c2)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w2.Code, w2.Body.String())
+	}
+	data2 := decodeResponse(t, w2)["data"].(map[string]any)
+	if data2["serving_quantity"].(float64) != 0 || data2["serving_unit"].(string) != "" {
+		t.Errorf("expected an unknown serving to stay unknown, got %v %v",
+			data2["serving_quantity"], data2["serving_unit"])
+	}
+}
+
+// A unit that is neither g nor ml would reach the clients' arithmetic as one of them.
+func TestLogFood_rejectsUnknownServingUnit(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", map[string]any{
+		"name": "Olive Oil", "meal": "dinner", "calories": 120.0,
+		"serving_quantity": 1.0, "serving_unit": "tbsp",
+	})
+	th.LogFood(c)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+	if msg := decodeResponse(t, w)["error"].(string); msg != "Serving unit must be one of: g, ml." {
+		t.Errorf("unexpected message: %q", msg)
+	}
+}
+
+// A ceiling on one entry, and the sentence it answers with. The tag carries a literal
+// because struct tags cannot interpolate, so this also pins the literal to the constant:
+// change one without the other and the boundary cases below disagree.
+func TestLogFood_rejectsMoreThanMaxServings(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	entry := func(servings float64) map[string]any {
+		return map[string]any{
+			"name": "Olive Oil", "meal": "dinner", "calories": 120.0, "servings": servings,
+		}
+	}
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", entry(float64(models.MaxServings)+1))
+	th.LogFood(c)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 over the cap, got %d: %s", w.Code, w.Body.String())
+	}
+	if msg := decodeResponse(t, w)["error"].(string); !strings.Contains(msg, "100") {
+		t.Errorf("message should name the limit, got %q", msg)
+	}
+
+	// The cap itself is allowed — an off-by-one here would reject a legal entry.
+	c, w = newContext(uid, http.MethodPost, "/api/v1/food", entry(float64(models.MaxServings)))
+	th.LogFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected the cap itself to log, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLogFood_missingName(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{"meal": "breakfast", "calories": 300.0}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code == http.StatusCreated {
+		t.Fatal("expected error for missing name, got 201")
+	}
+}
+
+func TestLogFood_nameTooLong(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": strings.Repeat("x", 201), "meal": "lunch",
+		"calories": 100.0, "protein": 5.0, "carbs": 10.0, "fat": 3.0,
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for name > 200 chars, got %d", w.Code)
+	}
+}
+
+func TestLogFood_imageURLTooLong(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Test", "meal": "lunch",
+		"calories": 100.0, "protein": 5.0, "carbs": 10.0, "fat": 3.0,
+		"image_url": "https://" + strings.Repeat("a", 494),
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for image_url > 500 chars, got %d", w.Code)
+	}
+}
+
+func TestLogFood_barcodeTooLong(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Test", "meal": "dinner",
+		"calories": 100.0, "protein": 5.0, "carbs": 10.0, "fat": 3.0,
+		"barcode": strings.Repeat("1", 51),
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for barcode > 50 chars, got %d", w.Code)
+	}
+}
+
+// ─── UpdateFoodLog ────────────────────────────────────────────────────────────
+
+func TestUpdateFoodLog_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertFoodLog(t, uid, "Old name", "breakfast", 300, 20, 40, 10, time.Now())
+
+	body := map[string]any{
+		"name": "New name", "meal": "lunch",
+		"calories": 450.0, "protein": 35.0, "carbs": 55.0, "fat": 12.0,
+	}
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/food/"+fmt.Sprint(id), body)
+	setParam(c, "id", fmt.Sprint(id))
+	th.UpdateFoodLog(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"].(string) != "New name" {
+		t.Errorf("expected updated name, got %v", data["name"])
+	}
+	if data["calories"].(float64) != 450.0 {
+		t.Errorf("expected updated calories 450, got %v", data["calories"])
+	}
+	if data["meal"].(string) != "lunch" {
+		t.Errorf("expected updated meal lunch, got %v", data["meal"])
+	}
+}
+
+func TestUpdateFoodLog_omittedLoggedAtDefaultsToNow(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertFoodLog(t, uid, "Old name", "breakfast", 300, 20, 40, 10, time.Now())
+
+	body := map[string]any{
+		"name": "New name", "meal": "lunch",
+		"calories": 450.0, "protein": 35.0, "carbs": 55.0, "fat": 12.0,
+	}
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/food/"+fmt.Sprint(id), body)
+	setParam(c, "id", fmt.Sprint(id))
+	th.UpdateFoodLog(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	loggedAt, err := time.Parse(time.RFC3339, data["logged_at"].(string))
+	if err != nil {
+		t.Fatalf("parse logged_at %v: %v", data["logged_at"], err)
+	}
+	if age := time.Since(loggedAt); age < 0 || age > time.Minute {
+		t.Fatalf("expected omitted logged_at to default to now, got %v (%v old)", loggedAt, age)
+	}
+}
+
+func TestUpdateFoodLog_suppliedLoggedAtStoredAsUTC(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertFoodLog(t, uid, "Old name", "breakfast", 300, 20, 40, 10, time.Now())
+
+	body := map[string]any{
+		"name": "New name", "meal": "lunch",
+		"calories": 450.0, "protein": 35.0, "carbs": 55.0, "fat": 12.0,
+		"logged_at": "2026-07-16T20:00:00-05:00",
+	}
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/food/"+fmt.Sprint(id), body)
+	setParam(c, "id", fmt.Sprint(id))
+	th.UpdateFoodLog(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if got := data["logged_at"].(string); got != "2026-07-17T01:00:00Z" {
+		t.Fatalf("expected logged_at stored as UTC, got %q", got)
+	}
+}
+
+func TestUpdateFoodLog_ownershipEnforced(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+	id := insertFoodLog(t, other, "Original", "dinner", 500, 30, 60, 15, time.Now())
+
+	body := map[string]any{
+		"name": "Hijacked", "meal": "snacks",
+		"calories": 100.0, "protein": 5.0, "carbs": 10.0, "fat": 3.0,
+	}
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/food/"+fmt.Sprint(id), body)
+	setParam(c, "id", fmt.Sprint(id))
+	th.UpdateFoodLog(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-user update, got %d", w.Code)
+	}
+	var name string
+	db.DB.QueryRow(`SELECT name FROM food_logs WHERE id = ?`, id).Scan(&name)
+	if name != "Original" {
+		t.Fatal("entry was modified by wrong user")
+	}
+}
+
+func TestUpdateFoodLog_notFound(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "x", "meal": "lunch",
+		"calories": 100.0, "protein": 5.0, "carbs": 10.0, "fat": 3.0,
+	}
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/food/9999", body)
+	setParam(c, "id", "9999")
+	th.UpdateFoodLog(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing entry, got %d", w.Code)
+	}
+}
+
+// ─── DeleteFoodLog ────────────────────────────────────────────────────────────
+
+func TestDeleteFoodLog_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertFoodLog(t, uid, "To delete", "snacks", 100, 5, 15, 3, time.Now())
+
+	c, w := newContext(uid, http.MethodDelete, "/api/v1/food/"+fmt.Sprint(id), nil)
+	setParam(c, "id", fmt.Sprint(id))
+	th.DeleteFoodLog(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM food_logs WHERE id = ?`, id).Scan(&count)
+	if count != 0 {
+		t.Fatal("entry was not deleted")
+	}
+}
+
+func TestDeleteFoodLog_ownershipEnforced(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+	id := insertFoodLog(t, other, "Protected", "breakfast", 400, 25, 50, 12, time.Now())
+
+	c, w := newContext(uid, http.MethodDelete, "/api/v1/food/"+fmt.Sprint(id), nil)
+	setParam(c, "id", fmt.Sprint(id))
+	th.DeleteFoodLog(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-user delete, got %d", w.Code)
+	}
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM food_logs WHERE id = ?`, id).Scan(&count)
+	if count != 1 {
+		t.Fatal("entry was deleted by wrong user")
+	}
+}
+
+// ─── GetDailyStats ────────────────────────────────────────────────────────────
+
+func TestGetDailyStats_empty(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	date := time.Now().UTC().Format("2006-01-02")
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/stats?date="+date, nil)
+	th.GetDailyStats(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["total_calories"].(float64) != 0 {
+		t.Errorf("expected 0 calories, got %v", data["total_calories"])
+	}
+}
+
+func TestGetDailyStats_sumsMacrosCorrectly(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	today := time.Now().UTC()
+	insertFoodLog(t, uid, "Breakfast", "breakfast", 500, 30, 60, 15, today)
+	insertFoodLog(t, uid, "Lunch", "lunch", 700, 50, 80, 20, today)
+	// Different date — must be excluded
+	insertFoodLog(t, uid, "Yesterday", "dinner", 600, 40, 70, 18, today.AddDate(0, 0, -1))
+
+	date := today.Format("2006-01-02")
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/stats?date="+date, nil)
+	th.GetDailyStats(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["total_calories"].(float64) != 1200 {
+		t.Errorf("expected total_calories=1200, got %v", data["total_calories"])
+	}
+	if data["total_protein"].(float64) != 80 {
+		t.Errorf("expected total_protein=80, got %v", data["total_protein"])
+	}
+	if data["total_carbs"].(float64) != 140 {
+		t.Errorf("expected total_carbs=140, got %v", data["total_carbs"])
+	}
+	if data["total_fat"].(float64) != 35 {
+		t.Errorf("expected total_fat=35, got %v", data["total_fat"])
+	}
+}
+
+func TestGetDailyStats_scopedByUser(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+	today := time.Now().UTC()
+
+	insertFoodLog(t, uid, "Mine", "breakfast", 400, 25, 50, 10, today)
+	insertFoodLog(t, other, "Theirs", "lunch", 9999, 999, 999, 999, today)
+
+	date := today.Format("2006-01-02")
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/stats?date="+date, nil)
+	th.GetDailyStats(c)
+
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["total_calories"].(float64) != 400 {
+		t.Errorf("expected 400 kcal (own only), got %v", data["total_calories"])
+	}
+}
+
+// ─── GetFoodHistory ───────────────────────────────────────────────────────────
+
+func TestGetFoodHistory_empty(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/history?days=7", nil)
+	th.GetFoodHistory(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 0 {
+		t.Fatalf("expected empty history, got %d points", len(data))
+	}
+}
+
+func TestGetFoodHistory_groupsByDay(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	now := time.Now().UTC()
+
+	// Two entries on same day → should be one aggregated point
+	insertFoodLog(t, uid, "A", "breakfast", 400, 20, 50, 10, now.AddDate(0, 0, -1))
+	insertFoodLog(t, uid, "B", "lunch", 600, 40, 70, 15, now.AddDate(0, 0, -1))
+	// Entry outside window → excluded
+	insertFoodLog(t, uid, "Old", "dinner", 500, 30, 60, 12, now.AddDate(0, 0, -10))
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/history?days=7", nil)
+	th.GetFoodHistory(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("expected 1 day point, got %d", len(data))
+	}
+	pt := data[0].(map[string]any)
+	if pt["calories"].(float64) != 1000 {
+		t.Errorf("expected aggregated calories=1000, got %v", pt["calories"])
+	}
+	if pt["protein"].(float64) != 60 {
+		t.Errorf("expected aggregated protein=60, got %v", pt["protein"])
+	}
+}
+
+func TestGetFoodHistory_defaultsDaysTo30(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	// Entry 20 days ago — should appear with no ?days param (default 30)
+	insertFoodLog(t, uid, "Included", "lunch", 500, 30, 60, 15, time.Now().AddDate(0, 0, -20))
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/history", nil)
+	th.GetFoodHistory(c)
+
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("expected 1 point within default 30d window, got %d", len(data))
+	}
+}
+
+// ─── offBrands.UnmarshalJSON ──────────────────────────────────────────────────
+
+func TestOffBrands_stringInput(t *testing.T) {
+	var b offBrands
+	if err := json.Unmarshal([]byte(`"Kellogg's"`), &b); err != nil {
+		t.Fatalf("unmarshal string brand: %v", err)
+	}
+	if len(b) != 1 || b[0] != "Kellogg's" {
+		t.Errorf("expected [\"Kellogg's\"], got %v", b)
+	}
+}
+
+func TestOffBrands_arrayInput(t *testing.T) {
+	var b offBrands
+	if err := json.Unmarshal([]byte(`["Jif","Smucker's"]`), &b); err != nil {
+		t.Fatalf("unmarshal array brands: %v", err)
+	}
+	if len(b) != 2 {
+		t.Errorf("expected 2 brands, got %v", b)
+	}
+}
+
+func TestOffBrands_nullInput(t *testing.T) {
+	var b offBrands
+	if err := json.Unmarshal([]byte(`null`), &b); err != nil {
+		t.Fatalf("unmarshal null: %v", err)
+	}
+	if len(b) != 0 {
+		t.Errorf("expected empty brands for null, got %v", b)
+	}
+}
+
+// ─── offProductToResult ───────────────────────────────────────────────────────
+
+func TestOffProductToResult_usesServingWhenAvailable(t *testing.T) {
+	p := offProduct{
+		ProductName: "Jif Peanut Butter",
+		Brands:      offBrands{"Jif"},
+		ServingSize: "2 tbsp (32g)",
+		Nutriments: offNutrients{
+			EnergyKcal100g: 593, Proteins100g: 19, Carbohydrates100g: 22, Fat100g: 50,
+			EnergyKcalServing: 190, ProteinsServing: 7, CarbohydratesServing: 7, FatServing: 16,
+		},
+		ImageURL: "https://images.openfoodfacts.org/jif.jpg",
+	}
+	r := offProductToResult(p, "en")
+
+	if r.Calories != 190 {
+		t.Errorf("expected per-serving calories 190, got %v", r.Calories)
+	}
+	if r.ServingSize != "2 tbsp (32g)" {
+		t.Errorf("expected serving size label, got %q", r.ServingSize)
+	}
+	if r.ImageURL != "https://images.openfoodfacts.org/jif.jpg" {
+		t.Errorf("unexpected image url: %v", r.ImageURL)
+	}
+}
+
+func TestOffProductToResult_fallsBackTo100g(t *testing.T) {
+	p := offProduct{
+		ProductName: "Generic Bread",
+		Nutriments:  offNutrients{EnergyKcal100g: 265, Proteins100g: 9, Carbohydrates100g: 49, Fat100g: 3},
+		// No serving_size, no _serving nutriments
+	}
+	r := offProductToResult(p, "en")
+
+	if r.Calories != 265 {
+		t.Errorf("expected per-100g calories 265, got %v", r.Calories)
+	}
+	// Without the preposition: the clients render "per {serving_size}", so a label of
+	// "per 100g" showed as "per per 100g". Seen in the browser on every search result.
+	if r.ServingSize != "100 g" {
+		t.Errorf("expected '100 g' label, got %q", r.ServingSize)
+	}
+}
+
+// #171: a bottle of olive oil read 800 kcal and 93.3 g fat "per 100 g". The numbers are
+// right and OpenFoodFacts has no other figures for it — but they are per 100 *ml*, and
+// a user cannot pour 100 ml onto a salad, so the label has to say what they are and the
+// quantity has to be a number the clients can divide.
+func TestOffProductToResult_liquidFallbackIsPer100ml(t *testing.T) {
+	p := offProduct{
+		ProductName:         "Organic Extra Virgin Olive Oil",
+		ServingSize:         "15 ml",
+		ProductQuantityUnit: "ml",
+		// A serving label with no per-serving nutriments behind it: the case
+		// openfoodfacts-server#7768 tracks, and the one the reporter hit.
+		Nutriments: offNutrients{EnergyKcal100g: 800, Fat100g: 93.33},
+	}
+	r := offProductToResult(p, "en")
+
+	if r.Calories != 800 {
+		t.Errorf("expected per-100 calories 800, got %v", r.Calories)
+	}
+	if r.ServingSize != "100 ml" {
+		t.Errorf("expected '100 ml' label, got %q", r.ServingSize)
+	}
+	if r.ServingQuantity != 100 || r.ServingUnit != "ml" {
+		t.Errorf("expected 100 ml as a number, got %v %q", r.ServingQuantity, r.ServingUnit)
+	}
+}
+
+func TestOffProductToResult_carriesServingQuantityAndBarcode(t *testing.T) {
+	p := offProduct{
+		Code:            "0085239033265",
+		ProductName:     "Olive Oil",
+		ServingSize:     "1 Tbsp (15 ml)",
+		ServingQuantity: 15,
+		Nutriments: offNutrients{
+			EnergyKcal100g: 800, Fat100g: 93.33,
+			EnergyKcalServing: 120, FatServing: 14,
+		},
+	}
+	r := offProductToResult(p, "en")
+
+	if r.Calories != 120 || r.Fat != 14 {
+		t.Errorf("expected the per-serving figures, got %v kcal %v fat", r.Calories, r.Fat)
+	}
+	if r.ServingQuantity != 15 || r.ServingUnit != "ml" {
+		t.Errorf("expected 15 ml, got %v %q", r.ServingQuantity, r.ServingUnit)
+	}
+	// Search hits carry it so selecting one can re-read the product in full.
+	if r.Barcode != "0085239033265" {
+		t.Errorf("expected the barcode to survive, got %q", r.Barcode)
+	}
+}
+
+// OpenFoodFacts knows the serving but not its size for thousands of products
+// (openfoodfacts-server#7768). Inventing a number there would scale every weight the
+// user typed against a fiction, so 0 has to survive as "unknown".
+func TestOffProductToResult_servingWithoutAQuantityStaysUnknown(t *testing.T) {
+	p := offProduct{
+		ProductName: "Soda",
+		ServingSize: "12 fl oz",
+		Nutriments:  offNutrients{EnergyKcal100g: 41, EnergyKcalServing: 145},
+	}
+	r := offProductToResult(p, "en")
+
+	if r.ServingQuantity != 0 {
+		t.Errorf("expected an unknown quantity to stay 0, got %v", r.ServingQuantity)
+	}
+	if r.Calories != 145 {
+		t.Errorf("expected the per-serving calories to still be used, got %v", r.Calories)
+	}
+}
+
+func TestServingUnit(t *testing.T) {
+	// Every label here is a real OpenFoodFacts value, sampled from the API.
+	cases := []struct {
+		label, productUnit, want string
+	}{
+		{"1 Tbsp (15 ml)", "", "ml"},
+		{"150ml", "", "ml"},
+		{"8 fl. oz (240 ml)", "", "ml"},
+		{"1l", "", "ml"},
+		{"1 serving (170 g)", "", "g"},
+		{"90.0g", "", "g"},
+		{"1 barra/bar (23 g)", "", "g"},
+		// OpenFoodFacts' own serving_quantity_unit says "ml" for these — it converts
+		// cups to volume. The label says grams, and the label is what the user reads.
+		{"1/4 cup (7 g)", "", "g"},
+		{"0.67 cup (55 g)", "", "g"},
+		// No label at all: the pack size is the only signal, when it is filled in.
+		{"", "ml", "ml"},
+		{"", "g", "g"},
+		{"", "", "g"},
+		// Volume units are whole words, not letters found inside one.
+		{"1 slice (30 g)", "", "g"},
+		{"1 bowl (250 g)", "", "g"},
+	}
+	for _, c := range cases {
+		if got := servingUnit(c.label, c.productUnit); got != c.want {
+			t.Errorf("servingUnit(%q, %q) = %q, want %q", c.label, c.productUnit, got, c.want)
+		}
+	}
+}
+
+// OpenFoodFacts writes serving_quantity as a number or as a string, and leaves whatever
+// it could not parse in the field as free text.
+func TestOffFloatUnmarshal(t *testing.T) {
+	cases := []struct {
+		json string
+		want float64
+	}{
+		{`{"serving_quantity": 15}`, 15},
+		{`{"serving_quantity": "15"}`, 15},
+		{`{"serving_quantity": "15.5"}`, 15.5},
+		{`{"serving_quantity": null}`, 0},
+		{`{"serving_quantity": ""}`, 0},
+		{`{"serving_quantity": "about 2 cookies"}`, 0},
+		{`{}`, 0},
+	}
+	for _, c := range cases {
+		var p offProduct
+		if err := json.Unmarshal([]byte(c.json), &p); err != nil {
+			t.Fatalf("%s: %v", c.json, err)
+		}
+		if float64(p.ServingQuantity) != c.want {
+			t.Errorf("%s: got %v, want %v", c.json, float64(p.ServingQuantity), c.want)
+		}
+	}
+}
+
+func TestOffProductToResult_rejectsNonHTTPSImageURL(t *testing.T) {
+	p := offProduct{
+		ProductName: "Test",
+		ImageURL:    "http://example.com/img.jpg", // http, not https
+	}
+	r := offProductToResult(p, "en")
+	if r.ImageURL != "" {
+		t.Errorf("expected empty image_url for non-https, got %q", r.ImageURL)
+	}
+}
+
+func TestOffProductToResult_rejectsJavascriptImageURL(t *testing.T) {
+	p := offProduct{
+		ProductName: "Test",
+		ImageURL:    "javascript:alert(1)",
+	}
+	r := offProductToResult(p, "en")
+	if r.ImageURL != "" {
+		t.Errorf("expected empty image_url for javascript: URL, got %q", r.ImageURL)
+	}
+}
+
+func TestOffProductToResult_joinsMultipleBrands(t *testing.T) {
+	p := offProduct{
+		ProductName: "Cola",
+		Brands:      offBrands{"Coca-Cola", "TCCC"},
+	}
+	r := offProductToResult(p, "en")
+	if r.Brand != "Coca-Cola, TCCC" {
+		t.Errorf("expected joined brands, got %q", r.Brand)
+	}
+}
+
+// ─── LookupBarcode ────────────────────────────────────────────────────────────
+
+func TestLookupBarcode_invalidFormat(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	for _, code := range []string{"abc", "123", "12345678901234567", "../etc"} {
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/"+code, nil)
+		setParam(c, "code", code)
+		th.LookupBarcode(c)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("code %q: expected 400, got %d", code, w.Code)
+		}
+	}
+}
+
+func TestLookupBarcode_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	offResp := `{"status":"success","product":{"product_name":"Jif PB","brands":"Jif","serving_size":"2 tbsp","nutriments":{"energy-kcal_serving":190,"proteins_serving":7,"carbohydrates_serving":7,"fat_serving":16}}}`
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(offResp))
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/051500255186", nil)
+	setParam(c, "code", "051500255186")
+	th.LookupBarcode(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"].(string) != "Jif PB" {
+		t.Errorf("expected name 'Jif PB', got %v", data["name"])
+	}
+	if data["calories"].(float64) != 190 {
+		t.Errorf("expected per-serving calories 190, got %v", data["calories"])
+	}
+}
+
+func TestLookupBarcode_productNotFound(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"failure","product":{}}`))
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/012345678901", nil)
+	setParam(c, "code", "012345678901")
+	th.LookupBarcode(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown barcode, got %d", w.Code)
+	}
+}
+
+func TestLookupBarcode_rateLimited(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/012345678901", nil)
+	setParam(c, "code", "012345678901")
+	th.LookupBarcode(c)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 forwarded, got %d", w.Code)
+	}
+	if got := decodeResponse(t, w)["code"]; got != "RATE_LIMITED" || w.Header().Get("Retry-After") != "60" {
+		t.Fatalf("code = %v, Retry-After = %q", got, w.Header().Get("Retry-After"))
+	}
+}
+
+// ─── SearchFood ───────────────────────────────────────────────────────────────
+
+func TestSearchFood_missingQuery(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/search", nil)
+	th.SearchFood(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing q, got %d", w.Code)
+	}
+}
+
+func TestSearchFood_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	offResp := `{"hits":[{"product_name":"Whole Milk","brands":"Organic Valley","serving_size":"1 cup","nutriments":{"energy-kcal_serving":150,"proteins_serving":8,"carbohydrates_serving":12,"fat_serving":8}},{"product_name":"","brands":"","nutriments":{}}]}`
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(offResp))
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=milk", nil)
+	th.SearchFood(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	// Product with empty name must be filtered out
+	if len(data) != 1 {
+		t.Fatalf("expected 1 result (empty product filtered), got %d", len(data))
+	}
+	item := data[0].(map[string]any)
+	if item["name"].(string) != "Whole Milk" {
+		t.Errorf("expected 'Whole Milk', got %v", item["name"])
+	}
+}
+
+func TestSearchFood_rateLimited(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=pizza", nil)
+	th.SearchFood(c)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 forwarded, got %d", w.Code)
+	}
+	if got := decodeResponse(t, w)["code"]; got != "RATE_LIMITED" || w.Header().Get("Retry-After") != "60" {
+		t.Fatalf("code = %v, Retry-After = %q", got, w.Header().Get("Retry-After"))
+	}
+}
+
+func TestSearchFood_upstreamError(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=pizza", nil)
+	th.SearchFood(c)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for OFF 5xx, got %d", w.Code)
+	}
+}
+
+// ─── ListSavedFoods ───────────────────────────────────────────────────────────
+
+func TestListSavedFoods_empty(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/saved", nil)
+	th.ListSavedFoods(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 0 {
+		t.Fatalf("expected empty list, got %d items", len(data))
+	}
+}
+
+func TestListSavedFoods_alphabeticalAndScopedByUser(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+
+	insertSavedFood(t, uid, "Zucchini")
+	insertSavedFood(t, uid, "Apple")
+	insertSavedFood(t, uid, "Mango")
+	insertSavedFood(t, other, "Should not appear")
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/saved", nil)
+	th.ListSavedFoods(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 3 {
+		t.Fatalf("expected 3 items (own only), got %d", len(data))
+	}
+	names := []string{
+		data[0].(map[string]any)["name"].(string),
+		data[1].(map[string]any)["name"].(string),
+		data[2].(map[string]any)["name"].(string),
+	}
+	if names[0] != "Apple" || names[1] != "Mango" || names[2] != "Zucchini" {
+		t.Errorf("expected alphabetical order, got %v", names)
+	}
+}
+
+// ─── CreateSavedFood ──────────────────────────────────────────────────────────
+
+func TestCreateSavedFood_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Greek Yogurt", "brand": "Chobani",
+		"calories": 130.0, "protein": 17.0, "carbs": 9.0, "fat": 3.5,
+		"fiber": 0.0, "serving_size": "1 container (170g)",
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"].(string) != "Greek Yogurt" {
+		t.Errorf("expected name 'Greek Yogurt', got %v", data["name"])
+	}
+	if data["brand"].(string) != "Chobani" {
+		t.Errorf("expected brand 'Chobani', got %v", data["brand"])
+	}
+}
+
+// Starring saves the unscaled food — the servings stepper scales at log time — so
+// starring the same food twice cannot express anything the first star didn't. #115 was a
+// user doing exactly that and being left with two identical rows he could not tell apart.
+func TestCreateSavedFood_isSameStarTwice(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Chicken Breast", "brand": "Tesco",
+		"calories": 165.0, "protein": 31.0, "carbs": 0.0, "fat": 3.6,
+		"fiber": 0.0, "serving_size": "100g",
+	}
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first save: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	firstID := decodeResponse(t, w)["data"].(map[string]any)["id"]
+
+	// Second save of the same food: 200, not 201 — nothing was created.
+	c2, w2 := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second save: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if got := decodeResponse(t, w2)["data"].(map[string]any)["id"]; got != firstID {
+		t.Errorf("second save returned id %v, want the existing row %v", got, firstID)
+	}
+
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM saved_foods WHERE user_id = ?`, uid).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 saved food after saving the same one twice, got %d", count)
+	}
+}
+
+// Same name, different brand, is a different product and stays a separate favourite.
+func TestCreateSavedFood_brandDistinguishes(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	for _, brand := range []string{"Tesco", "Sainsbury's"} {
+		body := map[string]any{
+			"name": "Chicken Breast", "brand": brand,
+			"calories": 165.0, "protein": 31.0, "carbs": 0.0, "fat": 3.6,
+		}
+		c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+		th.CreateSavedFood(c)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("brand %q: expected 201, got %d: %s", brand, w.Code, w.Body.String())
+		}
+	}
+
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM saved_foods WHERE user_id = ?`, uid).Scan(&count)
+	if count != 2 {
+		t.Fatalf("expected 2 saved foods across two brands, got %d", count)
+	}
+}
+
+// The uniqueness is per user. One person starring a food must not stop anyone else.
+func TestCreateSavedFood_scopedPerUser(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+
+	body := map[string]any{"name": "Oats", "brand": "Quaker", "calories": 389.0}
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first user: expected 201, got %d", w.Code)
+	}
+	c2, w2 := newContext(other, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c2)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("second user: expected 201, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+func TestCreateSavedFood_missingName(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{"calories": 100.0, "protein": 5.0, "carbs": 10.0, "fat": 3.0}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c)
+
+	if w.Code == http.StatusCreated {
+		t.Fatal("expected error for missing name, got 201")
+	}
+}
+
+// TestCreateSavedFood_trimsWhitespace covers #137: whitespace around a name is
+// not a distinguishing feature of a food, so every spelling of "Oats" has to
+// land on the same stored value. Otherwise the list shows rows the user cannot
+// tell apart.
+func TestCreateSavedFood_trimsWhitespace(t *testing.T) {
+	variants := []string{"Oats", "Oats ", " Oats", "  Oats  ", "\tOats\n"}
+
+	for _, variant := range variants {
+		t.Run(fmt.Sprintf("%q", variant), func(t *testing.T) {
+			setupTestDB(t)
+			uid := createTestUser(t)
+
+			body := map[string]any{"name": variant, "brand": " Quaker ", "calories": 100.0}
+			c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+			th.CreateSavedFood(c)
+
+			if w.Code != http.StatusCreated {
+				t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+			}
+			data := decodeResponse(t, w)["data"].(map[string]any)
+			if data["name"].(string) != "Oats" {
+				t.Errorf("stored name = %q, want %q", data["name"], "Oats")
+			}
+			if data["brand"].(string) != "Quaker" {
+				t.Errorf("stored brand = %q, want %q", data["brand"], "Quaker")
+			}
+
+			var stored string
+			if err := db.DB.QueryRow(`SELECT name FROM saved_foods WHERE user_id = ?`, uid).Scan(&stored); err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			if stored != "Oats" {
+				t.Errorf("row in the database is %q, want %q", stored, "Oats")
+			}
+		})
+	}
+}
+
+// TestCreateSavedFood_whitespaceOnlyNameRejected covers the other half of #137:
+// `required` only rejects the empty string, and a space is not empty, so " "
+// used to be saved as a favourite that renders as nothing at all.
+func TestCreateSavedFood_whitespaceOnlyNameRejected(t *testing.T) {
+	for _, name := range []string{" ", "   ", "\t", "\n", " \t\n "} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			setupTestDB(t)
+			uid := createTestUser(t)
+
+			body := map[string]any{"name": name, "calories": 100.0}
+			c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+			th.CreateSavedFood(c)
+
+			if w.Code == http.StatusCreated {
+				t.Fatalf("a whitespace-only name was accepted: %s", w.Body.String())
+			}
+			var count int
+			db.DB.QueryRow(`SELECT COUNT(*) FROM saved_foods WHERE user_id = ?`, uid).Scan(&count)
+			if count != 0 {
+				t.Errorf("%d row(s) written for a rejected name", count)
+			}
+		})
+	}
+}
+
+// Trimming must not reach inside the name: a food really can have two words.
+func TestCreateSavedFood_keepsInteriorWhitespace(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{"name": "  Greek  Yogurt  ", "brand": "Chobani", "calories": 130.0}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].(map[string]any)
+	if data["name"].(string) != "Greek  Yogurt" {
+		t.Errorf("stored name = %q, want %q", data["name"], "Greek  Yogurt")
+	}
+}
+
+// The length limit should measure what gets stored, so padding must not push an
+// otherwise-legal name over the cap.
+func TestCreateSavedFood_lengthLimitAppliesToTrimmedName(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	name := strings.Repeat("a", 200)
+	body := map[string]any{"name": "   " + name + "   ", "calories": 100.0}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+	th.CreateSavedFood(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("a 200-character name with padding should be accepted, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].(map[string]any)
+	if got := data["name"].(string); got != name {
+		t.Errorf("stored name has length %d, want %d", len(got), len(name))
+	}
+}
+
+// TestCreateSavedFood_whitespaceVariantsCollapseToOneFood is the user-visible
+// statement of #137: saving every spelling of one food leaves one favourite.
+func TestCreateSavedFood_whitespaceVariantsCollapseToOneFood(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	// Only the first save creates a row. Once the trimmed name matches an existing
+	// favourite the insert hits UNIQUE(user_id, name, brand) and CreateSaved answers 200
+	// with the row already there, so asserting 201 throughout would be asserting that
+	// trimming had *not* worked.
+	for i, variant := range []string{"Oats", "Oats ", " Oats", "  Oats  "} {
+		body := map[string]any{"name": variant, "brand": "Quaker", "calories": 100.0}
+		c, w := newContext(uid, http.MethodPost, "/api/v1/food/saved", body)
+		th.CreateSavedFood(c)
+
+		want := http.StatusOK
+		if i == 0 {
+			want = http.StatusCreated
+		}
+		if w.Code != want {
+			t.Fatalf("saving %q: expected %d, got %d: %s", variant, want, w.Code, w.Body.String())
+		}
+	}
+
+	rows, err := db.DB.Query(`SELECT DISTINCT name FROM saved_foods WHERE user_id = ?`, uid)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, n)
+	}
+	if len(names) != 1 || names[0] != "Oats" {
+		t.Errorf("distinct saved names = %q, want exactly [\"Oats\"]", names)
+	}
+}
+
+// ─── DeleteSavedFood ──────────────────────────────────────────────────────────
+
+func TestDeleteSavedFood_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertSavedFood(t, uid, "To delete")
+
+	c, w := newContext(uid, http.MethodDelete, "/api/v1/food/saved/"+fmt.Sprint(id), nil)
+	setParam(c, "id", fmt.Sprint(id))
+	th.DeleteSavedFood(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM saved_foods WHERE id = ?`, id).Scan(&count)
+	if count != 0 {
+		t.Fatal("saved food was not deleted")
+	}
+}
+
+func TestDeleteSavedFood_ownershipEnforced(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+	id := insertSavedFood(t, other, "Protected food")
+
+	c, w := newContext(uid, http.MethodDelete, "/api/v1/food/saved/"+fmt.Sprint(id), nil)
+	setParam(c, "id", fmt.Sprint(id))
+	th.DeleteSavedFood(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-user delete, got %d", w.Code)
+	}
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM saved_foods WHERE id = ?`, id).Scan(&count)
+	if count != 1 {
+		t.Fatal("saved food was deleted by wrong user")
+	}
+}
+
+// insertFoodLogAt is the common case of insertFoodLog: a dinner entry with only
+// calories set. One insert path, so a change to the row shape can't leave a second
+// fixture stale.
+func insertFoodLogAt(t *testing.T, uid int64, name string, calories float64, loggedAt time.Time) int64 {
+	t.Helper()
+	return insertFoodLog(t, uid, name, "dinner", calories, 0, 0, 0, loggedAt)
+}
+
+// A west-of-UTC user's late-evening entry belongs to their day, not the UTC day.
+// Originally written against an explicit from/to range; the range is gone, so this
+// now asserts the same user-visible outcome through the stored zone — which is the
+// only path a client actually takes.
+func TestListFoodLogs_localDayWestTimezone(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "America/Los_Angeles") // UTC-7 in April
+
+	// 03:00 UTC on the 25th is 20:00 on the 24th in Los Angeles.
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", map[string]any{
+		"name": "Late dinner", "meal": "dinner", "calories": 800,
+		"logged_at": "2026-04-25T03:00:00Z",
+	})
+	th.LogFood(c)
+	// 08:00 UTC on the 25th is 01:00 on the 25th — the next local day.
+	// The recorder is checked, not discarded: if this seed fails the "excluded from
+	// the local day" assertion below passes for the wrong reason — the entry was
+	// never there to leak in.
+	c2, w2 := newContext(uid, http.MethodPost, "/api/v1/food", map[string]any{
+		"name": "Next local day", "meal": "snacks", "calories": 500,
+		"logged_at": "2026-04-25T08:00:00Z",
+	})
+	th.LogFood(c2)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("seed the next-local-day entry: %d %s", w2.Code, w2.Body.String())
+	}
+
+	c, w = newContext(uid, http.MethodGet, "/api/v1/food?date=2026-04-24", nil)
+	th.ListFoodLogs(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("expected 1 entry on the local day, got %d", len(data))
+	}
+	if name := data[0].(map[string]any)["name"].(string); name != "Late dinner" {
+		t.Errorf("expected the local-evening entry, got %v", name)
+	}
+}
+
+// Macros come from the stored day; the workout count still resolves through the
+// zone, because a workout is an instant with no day of its own. Both halves of the
+// payload must describe the same date.
+func TestGetDailyStats_localDayWestTimezone(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "America/Los_Angeles")
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", map[string]any{
+		"name": "Late dinner", "meal": "dinner", "calories": 800,
+		"logged_at": "2026-04-25T03:00:00Z",
+	})
+	th.LogFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed the local-evening entry: %d %s", w.Code, w.Body.String())
+	}
+	// Checked for the same reason as above — an unseeded boundary entry cannot leak.
+	c, w = newContext(uid, http.MethodPost, "/api/v1/food", map[string]any{
+		"name": "Next local day", "meal": "snacks", "calories": 500,
+		"logged_at": "2026-04-25T08:00:00Z",
+	})
+	th.LogFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed the next-local-day entry: %d %s", w.Code, w.Body.String())
+	}
+	// -420 = Los Angeles in April. 03:30Z minus 7h is 20:30 on the 24th, so the
+	// workout names the 24th itself rather than being resolved through a zone.
+	if _, err := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at, tz_offset_minutes) VALUES (?, ?, ?, ?)`,
+		uid, "Evening lift", time.Date(2026, 4, 25, 3, 30, 0, 0, time.UTC), -420,
+	); err != nil {
+		t.Fatalf("insert workout: %v", err)
+	}
+
+	c, w = newContext(uid, http.MethodGet, "/api/v1/food/stats?date=2026-04-24", nil)
+	th.GetDailyStats(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].(map[string]any)
+	if got := data["total_calories"].(float64); got != 800 {
+		t.Errorf("expected total_calories=800 (local day only), got %v", got)
+	}
+	if got := data["workout_count"].(float64); got != 1 {
+		t.Errorf("expected workout_count=1 on the same local day, got %v", got)
+	}
+	if got := data["date"].(string); got != "2026-04-24" {
+		t.Errorf("expected date label 2026-04-24, got %v", got)
+	}
+}
+
+// setUserTimezone stores an IANA zone for the user, the way a client's settings
+// PATCH would.
+func setUserTimezone(t *testing.T, uid int64, tz string) {
+	t.Helper()
+	if _, err := db.DB.Exec(
+		`INSERT INTO user_settings (user_id, timezone) VALUES (?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET timezone = excluded.timezone`,
+		uid, tz,
+	); err != nil {
+		t.Fatalf("set timezone: %v", err)
+	}
+}
+
+// An entry's day is decided by the user's zone at read time — so a client that only
+// ever sends an instant (every build shipped) lands on the right day.
+func TestListFoodLogs_bucketsByUserTimezone(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "America/New_York")
+
+	// 01:00 UTC on the 25th is 21:00 on the 24th in New York.
+	insertFoodLogAt(t, uid, "Late dinner", 800, time.Date(2026, 4, 25, 1, 0, 0, 0, time.UTC))
+	// 05:00 UTC on the 25th is 01:00 on the 25th — the next local day.
+	insertFoodLogAt(t, uid, "Midnight snack", 200, time.Date(2026, 4, 25, 5, 0, 0, 0, time.UTC))
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food?date=2026-04-24", nil)
+	th.ListFoodLogs(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	logs := decodeResponse(t, w)["data"].([]any)
+	if len(logs) != 1 {
+		t.Fatalf("expected only the 24th's local entry, got %d", len(logs))
+	}
+	if name := logs[0].(map[string]any)["name"].(string); name != "Late dinner" {
+		t.Errorf("expected the 21:00-local entry, got %q", name)
+	}
+}
+
+// UTC+14 is the case noon-anchoring alone cannot survive: local noon on the 24th is
+// 22:00 UTC on the *23rd*, so a UTC date prefix files it a day early. This is the
+// whole reason the server needs to know the zone.
+func TestListFoodLogs_farEastTimezone(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "Pacific/Kiritimati") // UTC+14
+
+	insertFoodLogAt(t, uid, "Local noon", 600, time.Date(2026, 4, 23, 22, 0, 0, 0, time.UTC))
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food?date=2026-04-24", nil)
+	th.ListFoodLogs(c)
+	if n := len(decodeResponse(t, w)["data"].([]any)); n != 1 {
+		t.Fatalf("expected the entry on its local day 2026-04-24, got %d", n)
+	}
+}
+
+// Spring forward: 2026-03-08 is 23 hours long in New York, so the day must end at
+// the next local midnight rather than 24h after the first.
+func TestGetDailyStats_dstSpringForwardDayIs23Hours(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "America/New_York")
+
+	// 2026-03-08 is 23 hours long in New York: the day starts at 05:00 UTC (EST) and
+	// ends at 04:00 UTC on the 9th (EDT), because the clocks jump at 02:00 local.
+	//
+	// The fixture that matters is the one in [04:00, 05:00) UTC on the 9th. That hour
+	// is *outside* the real day but *inside* a naive start+24h window, so it is the
+	// only entry that can tell the two apart. Without it this test passes whether
+	// localDayRange uses AddDate(0, 0, 1) or Add(24 * time.Hour).
+	insertFoodLogAt(t, uid, "Inside, 23:00 local on the 8th", 400, time.Date(2026, 3, 9, 3, 0, 0, 0, time.UTC))
+	insertFoodLogAt(t, uid, "The 24th hour that does not exist", 900, time.Date(2026, 3, 9, 4, 30, 0, 0, time.UTC))
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/stats?date=2026-03-08", nil)
+	th.GetDailyStats(c)
+	if got := decodeResponse(t, w)["data"].(map[string]any)["total_calories"].(float64); got != 400 {
+		t.Errorf("expected 400 — the 23h day ends at 04:00 UTC, so the 04:30 entry belongs to the 9th; got %v", got)
+	}
+}
+
+// The mirror case: 2026-11-01 is 25 hours long in New York, so the day must not end
+// an hour early. An entry in [04:00, 05:00) UTC on the 2nd is inside the real day and
+// outside a naive start+24h window — the opposite failure from spring forward.
+func TestGetDailyStats_dstFallBackDayIs25Hours(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "America/New_York")
+
+	insertFoodLogAt(t, uid, "The 25th hour", 400, time.Date(2026, 11, 2, 4, 30, 0, 0, time.UTC))
+	insertFoodLogAt(t, uid, "Next local day", 900, time.Date(2026, 11, 2, 5, 30, 0, 0, time.UTC))
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/stats?date=2026-11-01", nil)
+	th.GetDailyStats(c)
+	if got := decodeResponse(t, w)["data"].(map[string]any)["total_calories"].(float64); got != 400 {
+		t.Errorf("expected 400 — the 25h day runs to 05:00 UTC on the 2nd; got %v", got)
+	}
+}
+
+// The chart and the totals above it must agree about which day an entry is on —
+// they now resolve it the same way, which is the point of having one mechanism.
+func TestGetFoodHistory_agreesWithDailyTotals(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	setUserTimezone(t, uid, "America/New_York")
+
+	// The expected day is still worked out without the zone lookup the endpoints use —
+	// that would let a wrong lookup agree with itself — but no longer from a fixed date.
+	// It was pinned to Aug 2026 and asked for days=400, which is above the handler's 365
+	// cap and so silently became 30: the test passed until Aug 7 aged out of that window,
+	// then failed on its own. 01:00 UTC is always the previous calendar day in New York
+	// (21:00 in EDT, 20:00 in EST), so plain date arithmetic gives the answer.
+	now := time.Now().UTC()
+	at := time.Date(now.Year(), now.Month(), now.Day(), 1, 0, 0, 0, time.UTC).AddDate(0, 0, -10)
+	insertFoodLogAt(t, uid, "Late dinner", 700, at)
+	day := at.AddDate(0, 0, -1).Format("2006-01-02")
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/stats?date="+day, nil)
+	th.GetDailyStats(c)
+	dailyCals := decodeResponse(t, w)["data"].(map[string]any)["total_calories"].(float64)
+	if dailyCals != 700 {
+		t.Fatalf("daily totals put the 21:00-local entry somewhere else: got %v for %s", dailyCals, day)
+	}
+
+	c, w = newContext(uid, http.MethodGet, "/api/v1/food/history?days=60", nil)
+	th.GetFoodHistory(c)
+	for _, p := range decodeResponse(t, w)["data"].([]any) {
+		if pt := p.(map[string]any); pt["date"].(string) == day {
+			if pt["calories"].(float64) != dailyCals {
+				t.Errorf("history says %v for %s, daily totals say %v", pt["calories"], day, dailyCals)
+			}
+			return
+		}
+	}
+	t.Errorf("history has no bucket for %s, but the daily total is %v", day, dailyCals)
+}
+
+// An unloadable zone must be rejected at write time rather than silently making
+// every later query fall back to UTC.
+func TestUpdateSettings_rejectsUnknownTimezone(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/settings", map[string]any{"timezone": "Mars/Olympus_Mons"})
+	th.UpdateSettings(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unknown zone, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateSettings_acceptsIANAZoneAndPreservesOtherFields(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodPatch, "/api/v1/settings", map[string]any{"calorie_target": 2500})
+	th.UpdateSettings(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed settings: %d %s", w.Code, w.Body.String())
+	}
+
+	c, w = newContext(uid, http.MethodPatch, "/api/v1/settings", map[string]any{"timezone": "Europe/Berlin"})
+	th.UpdateSettings(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].(map[string]any)
+	if data["timezone"].(string) != "Europe/Berlin" {
+		t.Errorf("expected stored zone, got %v", data["timezone"])
+	}
+	// The COALESCE merge must not let a timezone-only PATCH reset the target.
+	if data["calorie_target"].(float64) != 2500 {
+		t.Errorf("timezone-only update clobbered calorie_target: %v", data["calorie_target"])
+	}
+}
+
+// Changing zones must NOT move an entry, at any distance.
+//
+// This is the inverse of the test it replaces. While the day was derived from the
+// account's zone at read time, a New York entry read from Tokyo — 13 hours away —
+// landed on the following day, because a noon anchor only absorbs a shift while
+// |offset delta| < 12. Now the day is stored on the row, so no distance is far
+// enough. Tokyo is kept as a case precisely because it is the one that used to fail.
+func TestListFoodLogs_zoneChangeDoesNotMoveStoredDay(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	setUserTimezone(t, uid, "America/New_York")
+	// Local noon on the 4th for a New York account (UTC-4 in August).
+	insertFoodLogAt(t, uid, "Lunch", 600, time.Date(2026, 8, 4, 16, 0, 0, 0, time.UTC))
+
+	countOn := func(zone, date string) int {
+		t.Helper()
+		setUserTimezone(t, uid, zone)
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food?date="+date, nil)
+		th.ListFoodLogs(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s %s: expected 200, got %d: %s", zone, date, w.Code, w.Body.String())
+		}
+		return len(decodeResponse(t, w)["data"].([]any))
+	}
+
+	for _, tc := range []struct {
+		zone, date string
+		want       int
+		why        string
+	}{
+		{"America/New_York", "2026-08-04", 1, "the day it was filed under"},
+		{"Pacific/Honolulu", "2026-08-04", 1, "6h away, still the 4th"},
+		{"Pacific/Honolulu", "2026-08-05", 0, "and not also on the 5th"},
+		{"Asia/Tokyo", "2026-08-04", 1, "13h away — this is the case that used to move"},
+		{"Asia/Tokyo", "2026-08-05", 0, "it must not appear on the 5th any more"},
+		{"Pacific/Kiritimati", "2026-08-04", 1, "UTC+14, the widest gap there is"},
+	} {
+		if got := countOn(tc.zone, tc.date); got != tc.want {
+			t.Errorf("%s on %s: got %d entries, want %d (%s)", tc.zone, tc.date, got, tc.want, tc.why)
+		}
+	}
+}
+
+// A logged entry has to remember its brand, or Recent cannot tell a branded favourite
+// from an unbranded food of the same name. Before food_logs carried brand, starring a
+// logged item from Recent posted brand ”, which passed UNIQUE(user_id, name, brand) and
+// created a second row — the duplicate class #115 was filed for, re-entered through the
+// Recent tab.
+func TestLogFood_roundTripsBrand(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "Chicken Breast", "brand": "Tesco", "meal": "lunch",
+		"calories": 165.0, "protein": 31.0, "carbs": 0.0, "fat": 3.6, "servings": 1.0,
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := decodeResponse(t, w)["data"].(map[string]any)["brand"]; got != "Tesco" {
+		t.Fatalf("logged entry came back with brand %v, want Tesco", got)
+	}
+
+	// And it survives the read path the Recent tab is built on.
+	c2, w2 := newContext(uid, http.MethodGet, "/api/v1/food", nil)
+	th.ListFoodLogs(c2)
+	entries := decodeResponse(t, w2)["data"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if got := entries[0].(map[string]any)["brand"]; got != "Tesco" {
+		t.Errorf("listed entry has brand %v, want Tesco", got)
+	}
+}
+
+// The Recent tab matches logged entries against Favorites by name and brand, so a log
+// written with stray whitespace misses the favourite it came from — the star reads empty
+// next to a food already starred. Same normalisation as the favourites path.
+func TestLogFood_trimsNameAndBrand(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name": "  Oats  ", "brand": " Quaker ", "meal": "breakfast",
+		"calories": 100.0, "servings": 1.0,
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	d := decodeResponse(t, w)["data"].(map[string]any)
+	if d["name"].(string) != "Oats" {
+		t.Errorf("logged name = %q, want %q", d["name"], "Oats")
+	}
+	if d["brand"].(string) != "Quaker" {
+		t.Errorf("logged brand = %q, want %q", d["brand"], "Quaker")
+	}
+}
+
+// A whitespace-only name is not a name; `required` only rejects the empty string, so the
+// trim has to happen before validation for it to be caught.
+func TestLogFood_rejectsWhitespaceOnlyName(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{"name": "   ", "meal": "breakfast", "calories": 100.0, "servings": 1.0}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+	th.LogFood(c)
+
+	if w.Code == http.StatusCreated {
+		t.Fatalf("a whitespace-only name was logged: %s", w.Body.String())
+	}
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM food_logs WHERE user_id = ?`, uid).Scan(&count)
+	if count != 0 {
+		t.Errorf("%d row(s) written for a rejected name", count)
+	}
+}
+
+func TestUpdateFoodLog_trimsNameAndBrand(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	id := insertFoodLog(t, uid, "Oats", "breakfast", 100, 5, 20, 2, time.Now())
+
+	body := map[string]any{
+		"name": " Rolled Oats ", "brand": " Quaker ", "meal": "breakfast",
+		"calories": 120.0, "servings": 1.0,
+	}
+	c, w := newContext(uid, http.MethodPut, "/api/v1/food/"+fmt.Sprint(id), body)
+	setParam(c, "id", fmt.Sprint(id))
+	th.UpdateFoodLog(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	d := decodeResponse(t, w)["data"].(map[string]any)
+	if d["name"].(string) != "Rolled Oats" || d["brand"].(string) != "Quaker" {
+		t.Errorf("updated entry is %q/%q, want trimmed", d["name"], d["brand"])
+	}
+}
+
+// ─── Localised names ──────────────────────────────────────────────────────────
+
+func TestRequestLanguage(t *testing.T) {
+	cases := map[string]string{
+		"es": "es", "ES": "es", "en": "en", "pt-BR": "pt", "pt_BR": "en",
+		"zh-Hant-TW": "zh", "": "en", "../x": "en", "e": "en", "español": "en",
+		"12": "en",
+	}
+	for in, want := range cases {
+		c, _ := newContext(0, http.MethodGet, "/x?locale="+url.QueryEscape(in), nil)
+		if got := requestLanguage(c); got != want {
+			t.Errorf("locale %q: got %q, want %q", in, got, want)
+		}
+	}
+	c, _ := newContext(0, http.MethodGet, "/x", nil)
+	if got := requestLanguage(c); got != "en" {
+		t.Errorf("absent locale: got %q, want en", got)
+	}
+}
+
+func TestSearchFood_offURLCarriesLanguage(t *testing.T) {
+	const tail = "&cc=world&page_size=20&page=1&fields=code,product_name,product_name_en,"
+	const rest = "brands,nutriments,serving_size,image_url"
+	cases := []struct{ path, want string }{
+		{"/api/v1/food/search?q=leche&locale=es", "q=leche&langs=es,en" + tail + "product_name_es," + rest},
+		{"/api/v1/food/search?q=milk&locale=en", "q=milk&langs=en" + tail + rest},
+		{"/api/v1/food/search?q=milk", "q=milk&langs=en" + tail + rest},
+		{"/api/v1/food/search?q=milk&locale=" + url.QueryEscape("../x"), "q=milk&langs=en" + tail + rest},
+		{"/api/v1/food/search?q=pao&locale=pt-BR", "q=pao&langs=pt,en" + tail + "product_name_pt," + rest},
+	}
+	for _, tc := range cases {
+		setupTestDB(t)
+		uid := createTestUser(t)
+		var gotPath, gotQuery string
+		withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"hits":[]}`))
+		})
+		c, w := newContext(uid, http.MethodGet, tc.path, nil)
+		th.SearchFood(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: got %d", tc.path, w.Code)
+		}
+		if gotPath != "/search" || gotQuery != tc.want {
+			t.Errorf("%s:\n got %s?%s\nwant /search?%s", tc.path, gotPath, gotQuery, tc.want)
+		}
+	}
+}
+
+func TestOffProductName(t *testing.T) {
+	cases := []struct{ name, js, lang, want string }{
+		{"user language", `{"product_name":"Nutella pate","product_name_en":"Nutella","product_name_es":"Nutella crema"}`, "es", "Nutella crema"},
+		{"falls to en", `{"product_name":"Nutella pate","product_name_en":"Nutella"}`, "es", "Nutella"},
+		{"en over main", `{"product_name":"ผลิตภัณฑ์นม","product_name_en":"Homogenized Milk"}`, "en", "Homogenized Milk"},
+		{"main only", `{"product_name":"Leche"}`, "en", "Leche"},
+		{"blank lang falls through", `{"product_name":"Leche","product_name_es":"   "}`, "es", "Leche"},
+		{"suffixed key is not a language", `{"product_name_fr_imported":"x","product_name":"y"}`, "fr", "y"},
+		{"null ignored", `{"product_name_de":null,"product_name":"z"}`, "de", "z"},
+		{"all empty", `{"product_name":"","product_name_en":""}`, "en", ""},
+	}
+	for _, tc := range cases {
+		var p offProduct
+		if err := json.Unmarshal([]byte(tc.js), &p); err != nil {
+			t.Fatalf("%s: decode: %v", tc.name, err)
+		}
+		if got := p.name(tc.lang); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSearchFood_namesInRequestedLanguage(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"hits":[
+			{"product_name":"Main1","product_name_en":"En1","product_name_es":"Es1"},
+			{"product_name":"Main2","product_name_en":"En2"},
+			{"product_name":"Main3"},
+			{"product_name":"","product_name_es":"Es4"},
+			{"product_name":"","product_name_en":""}
+		]}`))
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=x&locale=es", nil)
+	th.SearchFood(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d", w.Code)
+	}
+	data := decodeResponse(t, w)["data"].([]any)
+	want := []string{"Es1", "En2", "Main3", "Es4"}
+	if len(data) != len(want) {
+		t.Fatalf("expected %d results, got %d", len(want), len(data))
+	}
+	for i, wn := range want {
+		if got := data[i].(map[string]any)["name"]; got != wn {
+			t.Errorf("hit %d: got %v, want %s", i, got, wn)
+		}
+	}
+}
+
+func TestLookupBarcode_localisedNameFromFullProduct(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	var gotPath, gotQuery string
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","product":{"code":"3017620406003","product_name":"Nutella pate","product_name_en":"Nutella","product_name_es":"Nutella crema","serving_size":"15 g","serving_quantity":15,"nutriments":{"energy-kcal_serving":80,"energy-kcal_100g":539}}}`))
+	})
+
+	for locale, want := range map[string]string{"es": "Nutella crema", "fr": "Nutella"} {
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/3017620406003?locale="+locale, nil)
+		setParam(c, "code", "3017620406003")
+		th.LookupBarcode(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: got %d", locale, w.Code)
+		}
+		if gotPath != "/api/v3/product/3017620406003.json" || gotQuery != "" {
+			t.Errorf("%s: OFF saw %s?%s, want the full product with no fields filter", locale, gotPath, gotQuery)
+		}
+		data := decodeResponse(t, w)["data"].(map[string]any)
+		if data["name"] != want {
+			t.Errorf("%s: name %v, want %s", locale, data["name"], want)
+		}
+		if data["calories"].(float64) != 80 {
+			t.Errorf("%s: calories %v, want per-serving 80", locale, data["calories"])
+		}
+	}
+}
+
+func TestLookupBarcode_nameOnlyInUserLanguage(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","product":{"product_name":"","product_name_es":"Solo es"}}`))
+	})
+
+	for q, want := range map[string]int{"?locale=es": http.StatusOK, "": http.StatusNotFound} {
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/012345678901"+q, nil)
+		setParam(c, "code", "012345678901")
+		th.LookupBarcode(c)
+		if w.Code != want {
+			t.Fatalf("%q: got %d, want %d", q, w.Code, want)
+		}
+		if want == http.StatusOK {
+			if n := decodeResponse(t, w)["data"].(map[string]any)["name"]; n != "Solo es" {
+				t.Errorf("%q: name %v", q, n)
+			}
+		}
+	}
+}

@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  backend:
+    image: cwlumm/lyftr-backend:latest
+    build: ./backend
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    environment:
+      - ENV=production
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET, e.g. openssl rand -hex 32}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
+      - DB_TYPE=sqlite
+      - DB_PATH=/app/data/lyftr.db
+      - REGISTRATION=${REGISTRATION:-first-user}
+      - DEMO_MODE=${DEMO_MODE:-false}
+      - OEDB_BASE_URL=${OEDB_BASE_URL:-}
+      - OEDB_CATALOG_URLS=${OEDB_CATALOG_URLS:-}
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: cwlumm/lyftr-frontend:latest
+    # The Expo app's web export. Repo root, not ./apps/app — the build installs the npm workspace
+    # so it can reach packages/shared. Service name stays `frontend` so the CI bake cache
+    # flags match.
+    build:
+      context: .
+      dockerfile: apps/app/Dockerfile.web
+    restart: unless-stopped
+    environment:
+      # host:port the frontend nginx proxies /api to. Must match the backend's PORT.
+      - BACKEND_ORIGIN=${BACKEND_ORIGIN:-backend:3000}
+    ports:
+      - "${PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy

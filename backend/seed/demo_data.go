@@ -1,0 +1,426 @@
+package seed
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"math/rand"
+	"strings"
+	"time"
+)
+
+type demoEx struct {
+	patterns   []string // LIKE patterns tried in order
+	sets       int
+	reps       int
+	baseWeight float64 // lbs, week 1
+	peakWeight float64 // lbs, week 8
+	superset   int     // 0 = none; rows sharing a value are adjacent and linked
+}
+
+var pushA = []demoEx{
+	{[]string{"%bench press%medium%", "%barbell bench press%", "%bench press%"}, 4, 5, 135, 160, 0},
+	{[]string{"%barbell shoulder press%", "%military press%", "%overhead press%"}, 3, 8, 95, 115, 0},
+	{[]string{"%incline%barbell%press%", "%incline%press%"}, 3, 8, 105, 125, 0},
+	{[]string{"%tricep%pushdown%", "%triceps pushdown%", "%pushdown%"}, 3, 12, 50, 65, 1},
+	{[]string{"%lateral raise%"}, 3, 15, 20, 30, 1},
+}
+
+var pullA = []demoEx{
+	{[]string{"%barbell deadlift%", "%deadlift%"}, 3, 5, 225, 275, 0},
+	{[]string{"%bent over%row%", "%barbell row%"}, 4, 8, 135, 165, 0},
+	{[]string{"%lat pulldown%"}, 3, 10, 120, 150, 0},
+	{[]string{"%face pull%"}, 3, 15, 40, 55, 0},
+	{[]string{"%barbell curl%", "%standing barbell curl%", "%curl%"}, 3, 10, 65, 85, 0},
+}
+
+var legsA = []demoEx{
+	{[]string{"%barbell squat%", "%back squat%", "%squat%"}, 4, 5, 185, 225, 0},
+	{[]string{"%romanian deadlift%"}, 3, 8, 135, 165, 0},
+	{[]string{"%leg press%"}, 3, 12, 270, 360, 0},
+	{[]string{"%leg curl%", "%lying leg curl%"}, 3, 12, 90, 120, 0},
+	{[]string{"%standing calf%", "%calf raise%"}, 4, 15, 135, 175, 0},
+}
+
+var pushB = []demoEx{
+	{[]string{"%incline%dumbbell%press%", "%incline%press%"}, 4, 8, 65, 80, 0},
+	{[]string{"%dumbbell shoulder press%", "%seated dumbbell press%", "%dumbbell press%"}, 3, 10, 45, 60, 0},
+	{[]string{"%cable fly%", "%chest fly%", "%pec deck%"}, 3, 12, 60, 80, 0},
+	{[]string{"%skull crusher%", "%lying tricep%", "%ez-bar tricep%"}, 3, 10, 60, 80, 0},
+	{[]string{"%dumbbell lateral raise%", "%lateral raise%"}, 3, 15, 20, 30, 0},
+}
+
+var pullB = []demoEx{
+	{[]string{"%sumo deadlift%", "%romanian deadlift%"}, 3, 6, 205, 245, 0},
+	{[]string{"%seated cable row%", "%cable row%", "%seated row%"}, 4, 10, 120, 150, 0},
+	{[]string{"%pull-up%", "%pullup%", "%chin-up%"}, 3, 6, 0, 0, 0},
+	{[]string{"%reverse fly%", "%bent over reverse%", "%rear delt%"}, 3, 15, 25, 35, 0},
+	{[]string{"%hammer curl%", "%dumbbell hammer curl%"}, 3, 10, 35, 50, 0},
+}
+
+var legsB = []demoEx{
+	{[]string{"%front squat%", "%hack squat%", "%goblet squat%"}, 4, 6, 135, 165, 0},
+	{[]string{"%good morning%"}, 3, 10, 95, 115, 0},
+	{[]string{"%walking lunge%", "%lunge%"}, 3, 12, 50, 70, 0},
+	{[]string{"%seated leg curl%", "%leg curl%"}, 3, 12, 80, 105, 0},
+	{[]string{"%seated calf%", "%calf raise%"}, 4, 15, 90, 120, 0},
+}
+
+// weekSchedule maps day-of-week (0=Sun) to workout template index.
+// -1 = rest. 0=PushA 1=PullA 2=LegsA 3=PushB 4=PullB 5=LegsB
+var weekSchedule = map[time.Weekday]int{
+	time.Monday:    0,
+	time.Tuesday:   1,
+	time.Wednesday: 2,
+	time.Thursday:  3,
+	time.Friday:    4,
+	time.Saturday:  5,
+	time.Sunday:    -1,
+}
+
+var workoutNames = []string{"Push A", "Pull A", "Legs A", "Push B", "Pull B", "Legs B"}
+var workoutDurations = []int{3720, 3480, 4200, 3660, 3540, 4320}
+var workoutTemplates = [][]demoEx{pushA, pullA, legsA, pushB, pullB, legsB}
+
+// CatalogPrimer materializes the catalog rows matching a search term, so a caller
+// that needs particular exercises to exist locally can ask for exactly those.
+//
+// Demo data is the only caller. It exists because Lyftr no longer seeds an
+// exercise library: the demo account's routine references about thirty specific
+// exercises, and this pulls those thirty rather than importing a catalog nothing
+// else needs.
+type CatalogPrimer interface {
+	PrimeQuery(ctx context.Context, query string) error
+}
+
+func DemoData(db *sql.DB, primer CatalogPrimer) {
+	if primer == nil {
+		log.Println("seed: no exercise catalog configured, skipping demo data")
+		return
+	}
+	primeDemoExercises(db, primer)
+
+	var userID int64
+	if err := db.QueryRow(`SELECT id FROM users WHERE email = ?`, DemoEmail).Scan(&userID); err != nil {
+		log.Printf("seed: demo user not found: %v", err)
+		return
+	}
+
+	// Idempotency check
+	var wCount int
+	db.QueryRow(`SELECT COUNT(*) FROM workouts WHERE user_id = ?`, userID).Scan(&wCount)
+	if wCount > 0 {
+		return
+	}
+
+	progID, err := seedProgram(db, userID)
+	if err != nil {
+		log.Printf("seed: program: %v", err)
+	}
+	if err := seedWorkouts(db, userID, progID); err != nil {
+		log.Printf("seed: workouts: %v", err)
+	}
+	seedWeightLogs(db, userID)
+	seedFoodLogs(db, userID)
+	log.Println("seed: demo data complete")
+}
+
+func lookupExercise(db *sql.DB, patterns []string) (int64, bool) {
+	for _, p := range patterns {
+		var id int64
+		err := db.QueryRow(`SELECT id FROM exercises WHERE LOWER(name) LIKE ? AND owner_user_id IS NULL LIMIT 1`, p).Scan(&id)
+		if err == nil {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// supersetGroups returns each template row's superset_group, nil unless at least two
+// of its members resolved to a catalog exercise: a lone member would be a group of
+// one, which the app never stores.
+func supersetGroups(db *sql.DB, template []demoEx) []any {
+	resolved := map[int]int{}
+	for _, ex := range template {
+		if ex.superset == 0 {
+			continue
+		}
+		if _, ok := lookupExercise(db, ex.patterns); ok {
+			resolved[ex.superset]++
+		}
+	}
+	out := make([]any, len(template))
+	for i, ex := range template {
+		if ex.superset != 0 && resolved[ex.superset] >= 2 {
+			out[i] = ex.superset
+		}
+	}
+	return out
+}
+
+// seedProgram builds a 7-day PPL cycle (order matches weekSchedule Mon→Sun) so the
+// demo account showcases multi-day routines with a rest day baked in, not just a
+// flat exercise list. Targets seed at peakWeight (week-8 numbers) — this is the
+// routine as it stands "today", separate from the logged history in seedWorkouts,
+// which progresses from baseWeight up to it over the 8 seeded weeks.
+func seedProgram(db *sql.DB, userID int64) (int64, error) {
+	res, err := db.Exec(`INSERT INTO programs (user_id, name, notes) VALUES (?, ?, ?)`,
+		userID, "PPL — Push Pull Legs", "Classic 6-day PPL split for strength and hypertrophy.")
+	if err != nil {
+		return 0, err
+	}
+	progID, _ := res.LastInsertId()
+
+	// 0=PushA 1=PullA 2=LegsA 3=PushB 4=PullB 5=LegsB, -1=rest — Mon..Sun order.
+	cycle := []struct {
+		tmplIdx int
+		name    string
+	}{
+		{0, "Push A"}, {1, "Pull A"}, {2, "Legs A"},
+		{3, "Push B"}, {4, "Pull B"}, {5, "Legs B"},
+		{-1, "Rest"},
+	}
+
+	for dayIdx, day := range cycle {
+		isRest := day.tmplIdx < 0
+		dayRes, err := db.Exec(
+			`INSERT INTO program_days (program_id, order_index, is_rest_day, name) VALUES (?, ?, ?, ?)`,
+			progID, dayIdx, isRest, day.name,
+		)
+		if err != nil {
+			continue
+		}
+		dayID, _ := dayRes.LastInsertId()
+		if isRest {
+			continue
+		}
+		groups := supersetGroups(db, workoutTemplates[day.tmplIdx])
+		for exOrder, exDef := range workoutTemplates[day.tmplIdx] {
+			exID, ok := lookupExercise(db, exDef.patterns)
+			if !ok {
+				continue
+			}
+			pexRes, err := db.Exec(
+				`INSERT INTO program_exercises (program_id, program_day_id, exercise_id, order_index, superset_group) VALUES (?, ?, ?, ?, ?)`,
+				progID, dayID, exID, exOrder, groups[exOrder],
+			)
+			if err != nil {
+				continue
+			}
+			pexID, _ := pexRes.LastInsertId()
+			for s := 1; s <= exDef.sets; s++ {
+				db.Exec(
+					`INSERT INTO program_sets (program_exercise_id, set_number, target_reps, target_weight) VALUES (?, ?, ?, ?)`,
+					pexID, s, exDef.reps, exDef.peakWeight,
+				)
+			}
+		}
+	}
+	return progID, nil
+}
+
+func seedWorkouts(db *sql.DB, userID, progID int64) error {
+	rng := rand.New(rand.NewSource(42))
+	now := time.Now()
+	// 8 weeks of workouts ending 3 days ago
+	startDay := now.AddDate(0, 0, -59)
+
+	sessionCount := [6]int{} // counts per template type
+
+	for d := 0; d <= 56; d++ {
+		day := startDay.AddDate(0, 0, d)
+		if day.After(now.AddDate(0, 0, -3)) {
+			break
+		}
+
+		tmplIdx, ok := weekSchedule[day.Weekday()]
+		if !ok || tmplIdx < 0 {
+			continue
+		}
+
+		template := workoutTemplates[tmplIdx]
+		sessionNum := sessionCount[tmplIdx]
+		sessionCount[tmplIdx]++
+
+		// Linear progression: 0.0 (session 0) → 1.0 (session 7)
+		progress := float64(sessionNum) / 7.0
+		if progress > 1 {
+			progress = 1
+		}
+
+		startedAt := time.Date(day.Year(), day.Month(), day.Day(),
+			17+rng.Intn(3), rng.Intn(60), 0, 0, time.UTC)
+
+		res, err := db.Exec(
+			`INSERT INTO workouts (user_id, name, notes, duration, started_at, tz_offset_minutes, program_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			userID,
+			workoutNames[tmplIdx],
+			"",
+			workoutDurations[tmplIdx]+rng.Intn(600)-300,
+			startedAt,
+			// startedAt is built in UTC, so UTC is the offset it actually happened at.
+			0,
+			progID,
+		)
+		if err != nil {
+			return fmt.Errorf("workout insert: %w", err)
+		}
+		workoutID, _ := res.LastInsertId()
+
+		groups := supersetGroups(db, template)
+		for exOrder, exDef := range template {
+			exID, ok := lookupExercise(db, exDef.patterns)
+			if !ok {
+				continue
+			}
+			wexRes, err := db.Exec(
+				`INSERT INTO workout_exercises (workout_id, exercise_id, order_index, superset_group) VALUES (?, ?, ?, ?)`,
+				workoutID, exID, exOrder, groups[exOrder],
+			)
+			if err != nil {
+				continue
+			}
+			wexID, _ := wexRes.LastInsertId()
+
+			w := exDef.baseWeight + (exDef.peakWeight-exDef.baseWeight)*progress
+			// Snap to nearest 5 lbs plate increment
+			w = float64(int(w/5+0.5)) * 5
+			// Bodyweight exercises
+			if exDef.baseWeight == 0 {
+				w = 0
+			}
+
+			for s := 1; s <= exDef.sets; s++ {
+				reps := exDef.reps
+				// Last set occasionally one rep short (fatigue)
+				if s == exDef.sets && rng.Intn(4) == 0 {
+					reps--
+				}
+				db.Exec(
+					`INSERT INTO sets (workout_exercise_id, set_number, reps, weight) VALUES (?, ?, ?, ?)`,
+					wexID, s, reps, w,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func seedWeightLogs(db *sql.DB, userID int64) {
+	rng := rand.New(rand.NewSource(99))
+	now := time.Now()
+	// 90 days, ~185 lbs trending down to ~173 lbs
+	startWeight := 185.0
+	endWeight := 173.0
+
+	for d := 89; d >= 0; d-- {
+		// Skip ~18% of days (missed weigh-ins)
+		if rng.Intn(100) < 18 {
+			continue
+		}
+		day := now.AddDate(0, 0, -d)
+		progress := float64(89-d) / 89.0
+		w := startWeight + (endWeight-startWeight)*progress
+		// Daily noise ±1.5 lbs
+		w += (rng.Float64()*3 - 1.5)
+		loggedAt := time.Date(day.Year(), day.Month(), day.Day(), 7, 30, 0, 0, time.UTC)
+		db.Exec(
+			`INSERT INTO weight_logs (user_id, weight, notes, logged_at, logged_on) VALUES (?, ?, ?, ?, ?)`,
+			userID, fmt.Sprintf("%.1f", w), "", loggedAt, loggedAt.Format("2006-01-02"),
+		)
+	}
+}
+
+type mealRow struct {
+	meal     string
+	name     string
+	calories float64
+	protein  float64
+	carbs    float64
+	fat      float64
+}
+
+var mealPatterns = [][]mealRow{
+	{
+		{"breakfast", "Eggs, oats and banana", 520, 38, 62, 12},
+		{"lunch", "Chicken breast with rice and broccoli", 640, 55, 70, 8},
+		{"dinner", "Salmon fillet with sweet potato and asparagus", 590, 48, 48, 16},
+		{"snacks", "Greek yogurt and protein shake", 370, 52, 28, 6},
+	},
+	{
+		{"breakfast", "Protein oats with blueberries", 490, 35, 65, 9},
+		{"lunch", "Turkey and avocado wrap", 610, 46, 58, 18},
+		{"dinner", "Lean ground beef with pasta and marinara", 680, 52, 72, 14},
+		{"snacks", "Cottage cheese and almonds", 330, 38, 14, 16},
+	},
+	{
+		{"breakfast", "Scrambled eggs with whole-wheat toast", 480, 34, 48, 15},
+		{"lunch", "Tuna salad with quinoa", 570, 50, 52, 12},
+		{"dinner", "Grilled chicken thighs with roasted veg", 620, 54, 38, 22},
+		{"snacks", "Protein shake with banana", 340, 40, 40, 4},
+	},
+}
+
+func seedFoodLogs(db *sql.DB, userID int64) {
+	now := time.Now()
+	for d := 6; d >= 0; d-- {
+		day := now.AddDate(0, 0, -d)
+		pattern := mealPatterns[d%len(mealPatterns)]
+		for _, m := range pattern {
+			loggedAt := time.Date(day.Year(), day.Month(), day.Day(), 12, 0, 0, 0, time.UTC)
+			db.Exec(
+				`INSERT INTO food_logs (user_id, name, meal, calories, protein, carbs, fat, logged_at, logged_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				userID, m.name, m.meal, m.calories, m.protein, m.carbs, m.fat,
+				loggedAt,
+				// Seeded rows must carry their own day like every other write. The
+				// boot-time backfill cannot cover them — it is flag-guarded and runs
+				// once, while accounts are seeded long after. Without this the diary
+				// filters them out entirely.
+				loggedAt.Format("2006-01-02"),
+			)
+		}
+	}
+}
+
+// primeDemoExercises pulls the exercises the demo routine references.
+//
+// One catalog query per exercise slot, using the first LIKE pattern with its
+// wildcards stripped — the patterns were written as fallbacks for a local LIKE
+// search, and the first is always the most specific spelling. Failures are logged
+// and skipped rather than fatal: lookupExercise already tolerates a missing
+// exercise, and a demo account with 29 of 30 movements is far better than none.
+// A slot already held locally sends nothing.
+func primeDemoExercises(db *sql.DB, primer CatalogPrimer) {
+	seen := map[string]bool{}
+	for _, template := range workoutTemplates {
+		for _, ex := range template {
+			// Already held: a demo restarted hourly over a restored snapshot would
+			// otherwise send every query again on every boot.
+			if _, ok := lookupExercise(db, ex.patterns); ok {
+				continue
+			}
+			for _, pattern := range ex.patterns {
+				term := strings.TrimSpace(strings.ReplaceAll(pattern, "%", " "))
+				if term == "" || seen[term] {
+					continue
+				}
+				seen[term] = true
+
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				err := primer.PrimeQuery(ctx, term)
+				cancel()
+				if err != nil {
+					log.Printf("seed: demo catalog prime %q: %v", term, err)
+					continue
+				}
+				// The first pattern that resolves is the one lookupExercise will
+				// pick, so there is no reason to fetch its fallbacks too.
+				if _, ok := lookupExercise(db, ex.patterns); ok {
+					break
+				}
+			}
+		}
+	}
+	log.Printf("seed: primed demo exercises from open-exercise-db (%d queries)", len(seen))
+}

@@ -1,0 +1,1881 @@
+{
+  "settings": {
+    "title": "الإعدادات",
+    "subtitle": "التفضيلات وإعدادات الحساب",
+    "back": "الرئيسية",
+    "saved": "حُفظت الإعدادات",
+    "language": {
+      "label": "اللغة",
+      "description": "حسب لغة جهازك افتراضياً",
+      "systemChoice": "لغة النظام ({{name}})",
+      "search": "ابحث عن لغة",
+      "noMatches": "لا توجد لغة مطابقة"
+    },
+    "account": {
+      "title": "الحساب",
+      "name": {
+        "label": "الاسم",
+        "description": "الاسم الذي يرحب بك التطبيق به. اتركه فارغاً وسنستخدم بريدك بدلاً منه.",
+        "loadFailed": "تعذر تحميل اسمك، لذلك لن نعرض استبداله.",
+        "saveFailed": "تعذر حفظ اسمك.",
+        "title": "الاسم",
+        "subtitle": "الاسم الذي يرحب بك التطبيق به.",
+        "emptyHint": "اتركه فارغاً وسنستخدم بريدك بدلاً منه.",
+        "saveFailedRetry": "تعذر حفظ اسمك. حاول مرة أخرى."
+      },
+      "email": {
+        "label": "البريد الإلكتروني",
+        "description": "بريدك لتسجيل الدخول",
+        "change": "تغيير",
+        "changeLabel": "تغيير البريد",
+        "pageTitle": "تغيير البريد",
+        "pageSubtitle": "ستسجل الدخول بالعنوان الجديد. أي تغيير غير حالة الأحرف يسجل خروج أجهزتك الأخرى.",
+        "current": "البريد الحالي",
+        "new": "البريد الجديد",
+        "submit": "تحديث البريد",
+        "changedTitle": "تغير البريد",
+        "signInWith": "سجل الدخول بـ <email>{{email}}</email> من الآن.",
+        "signInWithPlain": "سجل الدخول بـ {{email}} من الآن.",
+        "caseOnly": "تغيرت حالة الأحرف فقط، لذلك تبقى أجهزتك الأخرى مسجلة الدخول.",
+        "signedOutElsewhere": "تبقى مسجلاً هنا، وسُجل خروج أجهزتك الأخرى.",
+        "changeFailed": "تعذر تغيير بريدك. حاول مرة أخرى."
+      },
+      "memberSince": {
+        "label": "عضو منذ"
+      },
+      "password": {
+        "label": "كلمة المرور",
+        "description": "تغييرها يسجل خروج أجهزتك الأخرى",
+        "change": "تغيير",
+        "current": "كلمة المرور الحالية",
+        "new": "كلمة المرور الجديدة",
+        "confirmNew": "تأكيد كلمة المرور الجديدة",
+        "pageTitle": "تغيير كلمة المرور",
+        "pageSubtitle": "ستبقى مسجلاً هنا، ويُسجل خروج كل الأجهزة الأخرى.",
+        "submit": "تحديث كلمة المرور",
+        "changedTitle": "تغيرت كلمة المرور",
+        "changedBody": "ما زلت مسجلاً هنا. سُجل خروج كل الأجهزة الأخرى وستحتاج كلمة المرور الجديدة.",
+        "changeFailed": "تعذر تغيير كلمة المرور. حاول مرة أخرى."
+      },
+      "backLink": "الإعدادات",
+      "backToSettings": "العودة إلى الإعدادات",
+      "saving": "جارٍ الحفظ"
+    },
+    "appearance": {
+      "title": "المظهر",
+      "theme": {
+        "label": "السمة",
+        "description": "ألوان الواجهة",
+        "dark": "داكن",
+        "light": "فاتح"
+      },
+      "darkMode": {
+        "label": "الوضع الداكن",
+        "description": "استخدام الألوان الداكنة"
+      }
+    },
+    "workout": {
+      "title": "التمرين",
+      "footnote": "الراحة الافتراضية تُطبق على التمارين الجديدة، والراحة الخاصة بالتمرين تتقدم عليها.",
+      "layout": {
+        "label": "تخطيط التمرين الجاري",
+        "description": "طريقة عرض التمارين أثناء الجلسة",
+        "list": "قائمة",
+        "gym": "وضع النادي"
+      },
+      "defaultView": {
+        "label": "العرض الافتراضي للتمرين"
+      },
+      "restTimer": {
+        "label": "مؤقت الراحة",
+        "description": "بدء عد تنازلي تلقائياً بين الجولات",
+        "off": "إيقاف",
+        "on": "تشغيل"
+      },
+      "defaultRest": {
+        "label": "الراحة الافتراضية",
+        "description": "للتمارين الجديدة، وراحة التمرين الخاصة تتقدم عليها",
+        "preset": "{{seconds}} ث",
+        "customLabel": "ثواني راحة مخصصة",
+        "decrease": "تقليل الراحة 5 ثوانٍ",
+        "increase": "زيادة الراحة 5 ثوانٍ"
+      }
+    },
+    "targets": {
+      "weightUnit": {
+        "label": "وحدة الوزن",
+        "description": "تُطبق التغييرات فوراً في كل التطبيق",
+        "changeFailed": "تعذر تغيير وحدة الوزن.",
+        "changeFailedTitle": "تعذر تغيير الوحدات",
+        "changeFailedShort": "تعذر تغيير وحدة الوزن"
+      },
+      "calorie": {
+        "label": "هدف السعرات",
+        "description": "هدف السعرات اليومي"
+      },
+      "protein": {
+        "label": "هدف البروتين",
+        "description": "هدف البروتين اليومي"
+      },
+      "carb": {
+        "label": "هدف الكربوهيدرات",
+        "description": "هدف الكربوهيدرات اليومي"
+      },
+      "fat": {
+        "label": "هدف الدهون",
+        "description": "هدف الدهون اليومي"
+      },
+      "saveHint": "احفظ أهداف السعرات والمغذيات",
+      "save": "حفظ الأهداف",
+      "saving": "جارٍ الحفظ…",
+      "saveFailed": "تعذر حفظ الأهداف",
+      "titleWeb": "الأهداف والوحدات",
+      "loadFailedHintWeb": "هذه أهدافك ووحداتك المحفوظة، لذلك لن نخمنها. باقي الصفحة يعمل.",
+      "title": "الوحدات والأهداف",
+      "footnote": "وحدة الوزن تُطبق فوراً في كل التطبيق. أهداف التغذية تغذي حلقات لوحة المتابعة.",
+      "loadFailedHint": "هذه أهدافك ووحداتك المحفوظة، لذلك لن نخمنها. كل شيء آخر هنا يعمل.",
+      "saved": "حُفظت الأهداف",
+      "loadFailed": "تعذر تحميل أهدافك"
+    },
+    "server": {
+      "title": "الخادم",
+      "webTitle": "نسخة مستضافة ذاتياً",
+      "footnote": "الخادم الذي يتصل به هذا التطبيق. اترك الرابط فارغاً لاستخدام الافتراضي.",
+      "api": {
+        "label": "خادم API",
+        "description": "الخادم المتصل به هذا العميل",
+        "default": "هذا الموقع (وكيل عكسي)"
+      },
+      "backend": {
+        "label": "الخادم",
+        "default": "الخادم الافتراضي"
+      },
+      "url": {
+        "label": "رابط الخادم",
+        "placeholder": "https://your-server.example.com",
+        "invalid": "أدخل رابطاً كاملاً يتضمن http:// أو https://",
+        "testAndSave": "اختبار وحفظ"
+      },
+      "connected": "متصل · {{name}} v{{version}}",
+      "savedWithWarning": "حُفظ — {{message}}",
+      "database": {
+        "label": "قاعدة البيانات",
+        "description": "محرك التخزين"
+      },
+      "version": {
+        "label": "الإصدار",
+        "description": "إصدار خادم عافيتك"
+      }
+    },
+    "library": {
+      "title": "مكتبة التمارين",
+      "database": {
+        "label": "قاعدة بيانات التمارين",
+        "description": "التمارين مصدرها open-exercise-db. يحتفظ هذا الخادم بنسخة كاملة من الفهرس ويحدثها يومياً."
+      },
+      "cached_one": "المخزن: {{amount}}",
+      "cached_zero": "المخزن: {{amount}}",
+      "cached_two": "المخزن: {{amount}}",
+      "cached_few": "المخزن: {{amount}}",
+      "cached_many": "المخزن: {{amount}}",
+      "cached_other": "المخزن: {{amount}}",
+      "cachedUnknown": "المخزن: —",
+      "refreshed_one": "تمارين محدثة: {{amount}}",
+      "refreshed_zero": "تمارين محدثة: {{amount}}",
+      "refreshed_two": "تمارين محدثة: {{amount}}",
+      "refreshed_few": "تمارين محدثة: {{amount}}",
+      "refreshed_many": "تمارين محدثة: {{amount}}",
+      "refreshed_other": "تمارين محدثة: {{amount}}",
+      "refresh": "تحديث المخزن",
+      "refreshing": "جارٍ التحديث…",
+      "refreshFailed": "تعذر تحديث المخزن.",
+      "lastSynced": "آخر مزامنة {{when}}",
+      "syncing": "جارٍ المزامنة…",
+      "syncUnreachable": "آخر مزامنة لم تصل إلى فهرس التمارين.",
+      "syncFailed": "آخر مزامنة لم تكتمل.",
+      "syncRetry": "إعادة المحاولة {{when}}.",
+      "footnote": "يؤثر على كل مستخدمي هذا الخادم.",
+      "confirmRemovals": {
+        "title": "قبول الفهرس الأصغر؟",
+        "message": "فهرس التمارين يعرض الآن أقل من نصف التمارين الموجودة على الخادم، لذلك حدّثت المزامنة ما وجدته ولم تخفِ شيئاً. إذا كان هذا متوقعاً، زامن مرة أخرى وأخفِ التمارين التي لم تعد معروضة. تبقى في الجلسات والبرامج التي تستخدمها.",
+        "confirm": "مزامنة وإخفاء"
+      }
+    },
+    "danger": {
+      "title": "منطقة الخطر",
+      "actionsTitle": "إجراءات الحساب"
+    },
+    "signOut": {
+      "label": "تسجيل الخروج",
+      "description": "الخروج من هذا الجهاز",
+      "button": "تسجيل الخروج"
+    },
+    "deleteAccount": {
+      "label": "حذف الحساب",
+      "description": "حذف كل بياناتك نهائياً",
+      "sheetTitle": "حذف الحساب؟",
+      "sheetMessage": "سيُحذف حسابك وكل بياناتك نهائياً ولا يمكن التراجع. أدخل كلمة المرور للتأكيد.",
+      "confirm": "حذف الحساب",
+      "failed": "تعذر حذف الحساب"
+    },
+    "saveFailed": "تعذر حفظ الإعدادات"
+  },
+  "filters": {
+    "title": "التصفية",
+    "button": "تصفية",
+    "buttonActive": "تصفية، المفعّل: {{active}}",
+    "reset": "إعادة ضبط",
+    "done": "تم",
+    "active": "المرشحات المفعلة",
+    "remove": "إزالة المرشح: {{label}}"
+  },
+  "common": {
+    "chart": {
+      "keyHint": "استخدم مفاتيح الأسهم لقراءة كل قيمة"
+    },
+    "duration": {
+      "seconds": "{{value}} ث",
+      "minutes": "{{value}} د"
+    },
+    "close": "إغلاق",
+    "dateFormat": {
+      "monthDay": "d MMM",
+      "monthDayYear": "d MMM yyyy",
+      "numericMonthDay": "d/M",
+      "weekdayDate": "EEEE، d MMMM yyyy",
+      "monthShort": "MMM",
+      "longDate": "d MMMM yyyy",
+      "weekdayNarrow": "EEEEE",
+      "weekdayMonthDayLong": "EEEE، d MMMM",
+      "weekdayMonthDay": "EEE، d MMM",
+      "weekdayMonthDayYear": "EEE، d MMM yyyy",
+      "year": "yyyy",
+      "monthYearLong": "MMMM yyyy",
+      "time": "h:mm a",
+      "monthDayTime": "d MMM، h:mm a"
+    },
+    "day": {
+      "today": "اليوم",
+      "yesterday": "أمس"
+    },
+    "cancel": "إلغاء",
+    "tryAgain": "حاول مرة أخرى",
+    "retrying": "جارٍ إعادة المحاولة…",
+    "loading": "جارٍ التحميل",
+    "search": "بحث…",
+    "clearSearch": "مسح البحث",
+    "edit": "تعديل",
+    "delete": "حذف",
+    "deleting": "جارٍ الحذف…",
+    "deleteConfirmMessage": "سيُحذف {{subject}} نهائياً.",
+    "deleteNamedConfirmMessage": "سيُحذف \"{{name}}\" نهائياً.",
+    "dismiss": "تجاهل",
+    "done": "تم",
+    "dismissKeyboard": "إخفاء لوحة المفاتيح",
+    "pickDate": "اختيار تاريخ",
+    "selectDate": "اختر التاريخ",
+    "capsLockOn": "مفتاح الأحرف الكبيرة مفعّل",
+    "figureFailed": "تعذر تحميل هذا الرسم",
+    "stepper": {
+      "decrease": "إنقاص {{name}}",
+      "increase": "زيادة {{name}}"
+    },
+    "password": {
+      "show": "إظهار {{label}}",
+      "hide": "إخفاء {{label}}"
+    },
+    "back": "رجوع",
+    "goBack": "الرجوع",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ…",
+    "count": {
+      "exercises_one": "{{count}} تمرين",
+      "exercises_zero": "{{count}} تمرين",
+      "exercises_two": "{{count}} تمرين",
+      "exercises_few": "{{count}} تمارين",
+      "exercises_many": "{{count}} تمريناً",
+      "exercises_other": "{{count}} تمرين",
+      "sets_one": "{{count}} جولة",
+      "sets_zero": "{{count}} جولة",
+      "sets_two": "{{count}} جولة",
+      "sets_few": "{{count}} جولات",
+      "sets_many": "{{count}} جولة",
+      "sets_other": "{{count}} جولة",
+      "reps_one": "{{count}} تكرار",
+      "reps_zero": "{{count}} تكرار",
+      "reps_two": "{{count}} تكرار",
+      "reps_few": "{{count}} تكرارات",
+      "reps_many": "{{count}} تكراراً",
+      "reps_other": "{{count}} تكرار",
+      "days_one": "{{count}} يوم",
+      "days_zero": "{{count}} يوم",
+      "days_two": "{{count}} يوم",
+      "days_few": "{{count}} أيام",
+      "days_many": "{{count}} يوماً",
+      "days_other": "{{count}} يوم"
+    },
+    "weightWithUnit": "الوزن ({{unit}})",
+    "weightName": "الوزن",
+    "loadingMore": "جارٍ تحميل المزيد…",
+    "tryDifferentSearch": "جرّب بحثاً آخر",
+    "required": "مطلوب",
+    "requiredLegend": "مطلوب",
+    "saveFailed": "تعذر الحفظ",
+    "todayChip": "اليوم",
+    "card": {
+      "deleteNamed": "حذف \"{{name}}\"؟",
+      "cannotUndo": "لا يمكن التراجع عن هذا"
+    },
+    "rest": {
+      "decrease5": "−5 ثوانٍ",
+      "increase5": "+5 ثوانٍ",
+      "timerOff": "مؤقت الراحة متوقف — شغله من الإعدادات",
+      "none": "بلا راحة"
+    },
+    "anonymousName": "صديقي",
+    "notes": "ملاحظات",
+    "saveChanges": "حفظ التغييرات",
+    "addExercise": "إضافة تمرين",
+    "discardTitle": "تجاهل التغييرات؟",
+    "discardMessage": "التغييرات هنا لم تُحفظ.",
+    "discardConfirm": "تجاهل",
+    "keepEditing": "متابعة التعديل",
+    "chips": {
+      "more": "+{{count}} أخرى",
+      "moreLabel": "عرض {{count}} أخرى",
+      "less": "عرض أقل"
+    },
+    "undo": "تراجع"
+  },
+  "bodyMap": {
+    "map": "خريطة",
+    "list": "قائمة",
+    "front": "الأمام",
+    "back": "الخلف",
+    "selected": "المختار",
+    "nothingPicked": "لم تختر شيئاً بعد",
+    "mainIs": "العضلة الرئيسية: {{muscle}}",
+    "isMain": "{{muscle}} هي العضلة الرئيسية مسبقاً.",
+    "mainOption": "{{muscle}} (العضلة الرئيسية)",
+    "full": "اخترت {{max}}، وهو الحد الأقصى. أزل واحدة لإضافة غيرها.",
+    "remove": "إزالة {{muscle}}"
+  },
+  "errors": {
+    "api": {
+      "misconfigured": "رابط الخادم غير صحيح على ما يبدو — لم يُعثر على واجهة API. راجع إعدادات الخادم.",
+      "restarting": "الخادم يعيد التشغيل أو لا يمكن الوصول إليه. حاول بعد قليل.",
+      "notApi": "هذا العنوان أعاد صفحة ويب وليس واجهة عافيتك. راجع إعدادات الخادم.",
+      "serverError": "خطأ في الخادم. حاول بعد قليل.",
+      "codes": {
+        "VALIDATION_FAILED": "بعض البيانات المدخلة غير صالحة.",
+        "INVALID_CREDENTIALS": "البريد أو كلمة المرور غير صحيحة.",
+        "EMAIL_TAKEN": "هذا البريد مسجل مسبقاً.",
+        "REGISTRATION_CLOSED": "التسجيل مغلق على هذا الخادم.",
+        "PASSWORD_TOO_LONG": "كلمة المرور يجب ألا تتجاوز 72 بايت — الحروف غير اللاتينية والإيموجي تُحسب بأكثر من واحد.",
+        "PASSWORD_UNCHANGED": "يجب أن تختلف كلمة المرور الجديدة عن الحالية.",
+        "WRONG_CURRENT_PASSWORD": "كلمة المرور الحالية غير صحيحة.",
+        "ACCOUNT_NOT_FOUND": "هذا الحساب لم يعد موجوداً.",
+        "PASSWORD_CHANGED_ELSEWHERE": "تغيرت كلمة المرور من مكان آخر. حاول مرة أخرى.",
+        "PASSWORD_CHANGED_SIGN_IN_AGAIN": "تغيرت كلمة المرور. سجل الدخول من جديد.",
+        "EMAIL_CHANGED_SIGN_IN_AGAIN": "تغير بريدك. سجل الدخول من جديد.",
+        "SIGN_IN_REQUIRED": "يجب تسجيل الدخول أولاً.",
+        "SESSION_INVALID": "جلستك غير صالحة. سجل الدخول من جديد.",
+        "SESSION_EXPIRED": "انتهت جلستك. سجل الدخول من جديد.",
+        "WRONG_TOKEN_TYPE": "لا يمكن استخدام هذا الرمز هنا.",
+        "ADMIN_REQUIRED": "هذا الإجراء للمدير فقط.",
+        "DEMO_ACCOUNT_PROTECTED": "لا يمكن تغيير الحساب التجريبي أو حذفه.",
+        "INTERNAL_ERROR": "حدث خطأ في الخادم.",
+        "DATABASE_BUSY": "قاعدة البيانات مشغولة. حاول بعد قليل.",
+        "RATE_LIMITED": "طلبات كثيرة. انتظر قليلاً وحاول مرة أخرى.",
+        "REQUIRED": "حقل {{field}} مطلوب.",
+        "INVALID_EMAIL": "يجب أن يكون {{field}} بريداً إلكترونياً صالحاً.",
+        "TOO_SHORT": "أقل طول لحقل {{field}} هو {{min}} حرفاً.",
+        "TOO_LONG": "أقصى طول لحقل {{field}} هو {{max}} حرفاً.",
+        "TOO_MANY_ITEMS": "يجب ألا تتجاوز عناصر {{field}} العدد {{max}}.",
+        "BELOW_MINIMUM": "يجب أن تكون قيمة {{field}} {{min}} أو أكبر.",
+        "NOT_ABOVE_MINIMUM": "يجب أن تكون قيمة {{field}} أكبر من {{min}}.",
+        "ABOVE_MAXIMUM": "يجب أن تكون قيمة {{field}} {{max}} أو أقل.",
+        "NOT_AN_OPTION": "يجب أن يكون {{field}} أحد: {{options}}.",
+        "TOO_MANY_WORKOUT_SETS": "الحد الأقصى لجولات الجلسة {{max}}.",
+        "TOO_MANY_PROGRAM_ROWS": "الحد الأقصى لأيام البرنامج وتمارينه وجولاته مجتمعة {{max}}.",
+        "SUPERSET_NOT_CONTIGUOUS": "تمارين المجموعة المركبة يجب أن تكون متجاورة.",
+        "INVALID_FIELD": "حقل {{field}} غير صالح.",
+        "INVALID_ID": "هذا المعرف غير صالح.",
+        "INVALID_EXERCISE_ID": "معرف التمرين غير صالح.",
+        "INVALID_PROGRAM_ID": "معرف البرنامج غير صالح.",
+        "INVALID_WORKOUT_ID": "معرف الجلسة غير صالح.",
+        "ENTRY_NOT_FOUND": "هذا السجل لم يعد موجوداً.",
+        "SAVED_FOOD_NOT_FOUND": "هذا الطعام المحفوظ لم يعد موجوداً.",
+        "EXERCISE_NOT_FOUND": "هذا التمرين لم يعد موجوداً.",
+        "PROGRAM_NOT_FOUND": "هذا البرنامج لم يعد موجوداً.",
+        "WORKOUT_NOT_FOUND": "هذه الجلسة لم تعد موجودة.",
+        "UNKNOWN_EXERCISES": "تمرين أو أكثر لم يعد موجوداً.",
+        "EXERCISE_NAME_TAKEN": "لديك تمرين باسم {{name}} مسبقاً.",
+        "EXERCISE_NOT_CUSTOM": "يمكن تغيير التمارين التي أنشأتها فقط.",
+        "PHOTO_INVALID": "هذا الملف ليس صورة يستطيع عافيتك قراءتها. استخدم JPEG أو PNG أو WebP.",
+        "PHOTO_TOO_LARGE": "الصورة كبيرة جداً. استخدم صورة أقل من 10 MB و40 ميغابكسل.",
+        "INVALID_TAXONOMY": "قيمة {{field}} ليست من القيم المعروفة.",
+        "CUSTOM_EXERCISE_LIMIT": "الحد الأقصى للتمارين المخصصة {{limit}}. أرشف واحداً لإفساح المجال.",
+        "INVALID_MERGE_TARGET": "اختر تمريناً آخر للدمج معه.",
+        "INVALID_DATE": "يجب أن يكون التاريخ بصيغة YYYY-MM-DD.",
+        "INVALID_LOGGED_ON": "يجب أن يكون تاريخ التسجيل بصيغة YYYY-MM-DD.",
+        "INVALID_FROM_DATE": "يجب أن يكون تاريخ البداية بصيغة YYYY-MM-DD.",
+        "INVALID_TO_DATE": "يجب أن يكون تاريخ النهاية بصيغة YYYY-MM-DD.",
+        "FOOD_NAME_TOO_LONG": "يجب ألا يتجاوز الاسم {{max}} حرفاً.",
+        "FOOD_BRAND_TOO_LONG": "يجب ألا تتجاوز العلامة التجارية {{max}} حرفاً.",
+        "SERVING_SIZE_TOO_LONG": "يجب ألا يتجاوز حجم الحصة {{max}} حرفاً.",
+        "BARCODE_TOO_LONG": "يجب ألا يتجاوز الباركود {{max}} حرفاً.",
+        "IMAGE_URL_TOO_LONG": "يجب ألا يتجاوز رابط الصورة {{max}} حرفاً.",
+        "SEARCH_TERM_REQUIRED": "أدخل كلمة للبحث.",
+        "INVALID_BARCODE": "هذا الباركود غير صالح.",
+        "PRODUCT_NOT_FOUND": "لا يوجد منتج بهذا الباركود.",
+        "FOOD_DATABASE_TIMEOUT": "قاعدة بيانات الأطعمة لم تستجب في الوقت المحدد. حاول مرة أخرى.",
+        "FOOD_DATABASE_UNREACHABLE": "تعذر الوصول إلى قاعدة بيانات الأطعمة.",
+        "FOOD_SEARCH_UNAVAILABLE": "البحث عن الأطعمة غير متاح مؤقتاً.",
+        "BARCODE_LOOKUP_UNAVAILABLE": "البحث بالباركود غير متاح مؤقتاً.",
+        "NO_EXERCISE_CATALOG": "لا يوجد فهرس تمارين مهيأ على هذا الخادم.",
+        "EXERCISE_CATALOG_UNREACHABLE": "تعذر الوصول إلى فهرس التمارين.",
+        "EXERCISE_CATALOG_SHRANK": "فهرس التمارين يعرض تمارين أقل بكثير مما على الخادم، لذلك لم يُحذف شيء. إذا كان هذا صحيحاً، يمكن لمشغل الخادم تأكيده بـ confirm_removals=true.",
+        "EXERCISE_SYNC_RUNNING": "توجد مزامنة تمارين جارية. حاول بعد انتهائها.",
+        "DISPLAY_NAME_CONTROL_CHARS": "لا يمكن أن يحتوي الاسم على أسطر جديدة أو رموز تحكم.",
+        "TIMEZONE_EMPTY": "المنطقة الزمنية لا يمكن أن تكون فارغة.",
+        "UNKNOWN_TIMEZONE": "منطقة زمنية غير معروفة: {{timezone}}.",
+        "NOT_A_NUMBER": "يجب أن يكون {{field}} رقماً.",
+        "NOT_TEXT": "يجب أن يكون {{field}} نصاً.",
+        "NOT_TRUE_OR_FALSE": "يجب أن تكون قيمة {{field}} صواب أو خطأ.",
+        "NOT_A_LIST": "يجب أن يكون {{field}} قائمة.",
+        "NOT_AN_OBJECT": "يجب أن يكون {{field}} كائناً.",
+        "BODY_WRONG_TYPE": "يحتوي الطلب على حقل بنوع خاطئ.",
+        "BODY_NOT_JSON": "محتوى الطلب ليس JSON صالحاً.",
+        "BODY_EMPTY": "محتوى الطلب فارغ.",
+        "BODY_UNREADABLE": "تعذرت قراءة الطلب.",
+        "BODY_TOO_LARGE": "الطلب كبير جداً.",
+        "INVALID_FIELDS": "بعض البيانات المدخلة غير صالحة.",
+        "INSTRUCTIONS_TOO_MANY": "الحد الأقصى لخطوات التمرين {{max}}.",
+        "INSTRUCTION_TOO_LONG": "يجب ألا تتجاوز كل خطوة {{max}} حرفاً.",
+        "INSTRUCTION_CONTROL_CHARS": "لا يمكن أن تحتوي الخطوة على أسطر جديدة أو رموز تحكم.",
+        "INSTRUCTIONS_TEXT_TOO_LONG": "يجب ألا تتجاوز التعليمات {{max}} حرفاً.",
+        "INVALID_CLIENT_ID": "معرف الطلب غير صالح."
+      },
+      "fields": {
+        "accept": "القبول",
+        "barcode": "الباركود",
+        "brand": "العلامة التجارية",
+        "calorie_target": "هدف السعرات",
+        "calories": "السعرات",
+        "carb_target": "هدف الكربوهيدرات",
+        "carbs": "الكربوهيدرات",
+        "category": "الفئة",
+        "current_password": "كلمة المرور الحالية",
+        "data": "البيانات",
+        "day_ids_known": "معرفات الأيام المعروفة",
+        "days": "الأيام",
+        "description": "الوصف",
+        "dismiss": "التجاهل",
+        "display_name": "الاسم المعروض",
+        "distance": "المسافة",
+        "duration": "المدة",
+        "email": "البريد الإلكتروني",
+        "equipment": "المعدات",
+        "exercise_id": "معرف التمرين",
+        "exercises": "التمارين",
+        "fat": "الدهون",
+        "fat_target": "هدف الدهون",
+        "fiber": "الألياف",
+        "id": "المعرف",
+        "image_url": "رابط الصورة",
+        "into_id": "معرف الدمج",
+        "is_rest_day": "يوم راحة",
+        "is_warmup": "جولة إحماء",
+        "logged_at": "وقت التسجيل",
+        "logged_on": "تاريخ التسجيل",
+        "meal": "الوجبة",
+        "muscle_group": "المجموعة العضلية",
+        "name": "الاسم",
+        "new_password": "كلمة المرور الجديدة",
+        "notes": "الملاحظات",
+        "order_index": "الترتيب",
+        "password": "كلمة المرور",
+        "program_day_id": "معرف يوم البرنامج",
+        "program_id": "معرف البرنامج",
+        "program_set_id": "معرف جولة البرنامج",
+        "protein": "البروتين",
+        "protein_target": "هدف البروتين",
+        "refresh_token": "رمز التحديث",
+        "reps": "التكرارات",
+        "rest_seconds": "ثواني الراحة",
+        "rpe": "RPE",
+        "secondary_muscles": "العضلات الثانوية",
+        "serving_quantity": "كمية الحصة",
+        "serving_size": "حجم الحصة",
+        "serving_unit": "وحدة الحصة",
+        "servings": "الحصص",
+        "set_number": "رقم الجولة",
+        "sets": "الجولات",
+        "started_at": "وقت البدء",
+        "superset_group": "المجموعة المركبة",
+        "target_reps": "التكرارات المستهدفة",
+        "target_weight": "الوزن المستهدف",
+        "timezone": "المنطقة الزمنية",
+        "tz_offset_minutes": "فرق التوقيت بالدقائق",
+        "weight": "الوزن",
+        "weight_unit": "وحدة الوزن",
+        "instructions": "التعليمات",
+        "client_id": "معرف العميل"
+      }
+    },
+    "network": {
+      "brief": {
+        "cleartextBlocked": "مرفوض لأن رابط الخادم يستخدم http://. راجع إعدادات الخادم.",
+        "certificateUntrusted": "هذا الجهاز لا يثق بشهادة الخادم. راجع إعدادات الخادم.",
+        "hostnameMismatch": "شهادة الخادم لا تشمل هذا العنوان. راجع إعدادات الخادم.",
+        "timeout": "الخادم لم يستجب في الوقت المحدد. حاول بعد قليل.",
+        "unreachable": "تعذر الوصول إلى الخادم. تأكد أنه يعمل.",
+        "unknown": "لا يمكن الوصول إلى الخادم الآن."
+      },
+      "full": {
+        "cleartextBlocked": "منع هذا الجهاز الاتصال لأن الرابط يستخدم http:// غير المشفر. حول الخادم إلى https:// — يستطيع الوكيل العكسي إصدار شهادة لاسم داخل الشبكة المحلية دون فتح منافذ.",
+        "certificateUntrusted": "هذا الجهاز لا يثق بشهادة الخادم. الحل الأفضل: أعط الخادم شهادة حقيقية — يستطيع الوكيل العكسي إصدارها لاسم داخل الشبكة المحلية دون فتح منافذ. أو ثبّت شهادة CA الخاصة بك من Settings → Security → Encryption & credentials، فيثق بها كل تطبيق على الجهاز وليس عافيتك فقط.",
+        "hostnameMismatch": "شهادة الخادم لا تشمل هذا العنوان. أعد إصدارها مع إدراج اسم المضيف أو عنوان IP في Subject Alternative Name (SAN).",
+        "timeout": "الخادم لم يستجب في الوقت المحدد. تأكد أنه يعمل ويمكن الوصول إليه من هذا الجهاز.",
+        "unreachable": "تعذر الاتصال بالخادم. راجع الرابط وتأكد أن الخادم يعمل.",
+        "unknownWeb": "لا يمكن الوصول إلى الخادم. راجع الرابط وتأكد أن الخادم يعمل ويسمح بمصدر هذا التطبيق (CORS).",
+        "unknownNative": "لا يمكن الوصول إلى الخادم. راجع الرابط وتأكد أن الخادم يعمل ويمكن الوصول إليه من هذا الجهاز.",
+        "withDetail": "{{message}} ({{detail}})"
+      }
+    },
+    "list": {
+      "loadFailed": "تعذر تحميل هذه القائمة.",
+      "unreadable": "أرسل الخادم شيئاً تعذرت قراءته.",
+      "title": "تعذر تحميل {{subject}}"
+    },
+    "boundary": {
+      "title": "تعذر عرض {{subject}}",
+      "thisPage": "هذه الصفحة",
+      "message": "حدث خطأ من طرفنا. حاول مرة أخرى، وإذا تكرر أعد تحميل الصفحة."
+    },
+    "unknown": "لم يحدد الخادم سبب الخطأ."
+  },
+  "server": {
+    "insecureWarning": "غير مشفر — يستطيع أي شخص على هذه الشبكة قراءة بيانات دخولك والبقاء مسجلاً باسمك. استخدم https:// إن أمكن.",
+    "mixedContentWarning": "سيمنع المتصفح هذا — صفحة HTTPS لا تستطيع الاتصال بخادم http://. استخدم https:// للخادم أيضاً، أو اترك الحقل فارغاً لاستخدام خادم هذا الموقع.",
+    "test": {
+      "notLyftr": "استجاب العنوان، لكنه لا يبدو خادم عافيتك.",
+      "unreachable": "تعذر الوصول إلى الخادم."
+    },
+    "settingsTitle": "إعدادات الخادم",
+    "blocked": "ممنوع",
+    "notEncrypted": "غير مشفر",
+    "blankPlaceholder": "اتركه فارغاً لاستخدام هذا الموقع",
+    "fullUrlHint": "الرابط الكامل، مثل <url>https://lyftr.example.com</url>",
+    "testing": "جارٍ الاختبار…",
+    "testAndSave": "اختبار وحفظ",
+    "current": "الحالي: {{url}}",
+    "usingSite": "يستخدم عنوان هذا الموقع (وكيل عكسي)",
+    "defaultShort": "الافتراضي",
+    "status": {
+      "invalidUrlExample": "أضف http:// أو https:// — مثل http://192.168.1.10:3000",
+      "invalidUrl": "أضف http:// أو https://",
+      "storageBlocked": "تعذر حفظ رابط الخادم — المتصفح يمنع التخزين.",
+      "connected": "متصل · {{name}} {{version}}",
+      "connectedTo": "متصل بـ {{name}} v{{version}}"
+    }
+  },
+  "auth": {
+    "passwordRules": {
+      "minLength_one": "{{count}} حرف على الأقل",
+      "minLength_zero": "{{count}} حرف على الأقل",
+      "minLength_two": "{{count}} حرف على الأقل",
+      "minLength_few": "{{count}} أحرف على الأقل",
+      "minLength_many": "{{count}} حرفاً على الأقل",
+      "minLength_other": "{{count}} حرف على الأقل",
+      "maxBytes_one": "{{count}} حرف على الأكثر (الحروف غير اللاتينية والإيموجي تُحسب أكثر)",
+      "maxBytes_zero": "{{count}} حرف على الأكثر (الحروف غير اللاتينية والإيموجي تُحسب أكثر)",
+      "maxBytes_two": "{{count}} حرف على الأكثر (الحروف غير اللاتينية والإيموجي تُحسب أكثر)",
+      "maxBytes_few": "{{count}} أحرف على الأكثر (الحروف غير اللاتينية والإيموجي تُحسب أكثر)",
+      "maxBytes_many": "{{count}} حرفاً على الأكثر (الحروف غير اللاتينية والإيموجي تُحسب أكثر)",
+      "maxBytes_other": "{{count}} حرف على الأكثر (الحروف غير اللاتينية والإيموجي تُحسب أكثر)",
+      "different": "تختلف عن كلمة المرور الحالية",
+      "match": "كلمتا المرور متطابقتان",
+      "mismatch": "كلمتا المرور غير متطابقتين",
+      "repeat": "أعد كتابة كلمة المرور الجديدة"
+    },
+    "divider": {
+      "or": "أو",
+      "orLower": "أو"
+    },
+    "field": {
+      "email": "البريد الإلكتروني",
+      "password": "كلمة المرور",
+      "confirmPassword": "تأكيد كلمة المرور",
+      "emailPlaceholder": "you@example.com"
+    },
+    "validation": {
+      "emailInvalid": "أدخل بريداً إلكترونياً صالحاً",
+      "passwordRequired": "أدخل كلمة المرور"
+    },
+    "closed": {
+      "notice": "هذا الخادم لا يقبل حسابات جديدة."
+    },
+    "tagline": "تمرّن · سجّل · تقدّم",
+    "hero": {
+      "headline": "سجّل. ارفع.",
+      "headlineAccent": "تقدّم.",
+      "description": "متتبع لياقتك على خادمك الخاص. سجّل تمارينك وطعامك ووزنك، وكل شيء تحت سيطرتك.",
+      "features": {
+        "workouts": "تتبع التمارين",
+        "food": "تسجيل الطعام والمغذيات",
+        "progress": "متابعة التقدم"
+      }
+    },
+    "login": {
+      "heading": "أهلاً بعودتك",
+      "subtitle": "سجل الدخول لمتابعة تمرينك.",
+      "submit": "تسجيل الدخول",
+      "submitting": "جارٍ الدخول…",
+      "failed": "البريد أو كلمة المرور غير صحيحة.",
+      "demoFailed": "تعذر الدخول إلى الحساب التجريبي.",
+      "demo": "جرّب الحساب التجريبي",
+      "demoHint": "بدون تسجيل",
+      "newHere": "جديد هنا؟",
+      "createAccountLink": "إنشاء حساب"
+    },
+    "register": {
+      "heading": "إنشاء حساب",
+      "subtitle": "ابدأ بمتابعة لياقتك اليوم.",
+      "subtitleNative": "ابدأ سجل تمارينك.",
+      "closedHeading": "التسجيل مغلق",
+      "closedBody": "أوقف مالك نسخة عافيتك هذه التسجيل الجديد. إذا كان ينبغي أن يكون لك حساب هنا، اطلب منه إنشاءه.",
+      "backToSignIn": "العودة لتسجيل الدخول",
+      "submit": "إنشاء حساب",
+      "submitting": "جارٍ إنشاء الحساب…",
+      "failed": "فشل التسجيل.",
+      "haveAccount": "لديك حساب مسبقاً؟",
+      "haveAccountShort": "لديك حساب؟",
+      "signInLink": "تسجيل الدخول"
+    }
+  },
+  "weight": {
+    "errors": {
+      "invalid": "أدخل وزناً صالحاً",
+      "tooHigh": "يجب أن يكون الوزن أقل من {{max}} {{unit}}",
+      "trendFailed": "تعذر تحميل منحنى وزنك.",
+      "statsFailed": "تعذر تحميل إحصاءات وزنك."
+    },
+    "bodyweightShort": "وزن الجسم",
+    "duplicateWarning": "سُجل مسبقاً في {{date}} ‏({{weight}} {{unit}}). تسجيله مرة أخرى؟",
+    "title": "الوزن",
+    "subtitle": "تابع وزن جسمك مع الوقت",
+    "loadFailed": "تعذر تحميل وزنك",
+    "deleteTitle": "حذف السجل؟",
+    "deleteSubject": "{{date}} · {{weight}} {{unit}}",
+    "deleteFailed": "تعذر حذف السجل",
+    "log": {
+      "title": "تسجيل الوزن",
+      "last": "السابق: {{weight}} {{unit}}",
+      "weightField": "الوزن",
+      "dateAndNote": "التاريخ وملاحظة",
+      "collapse": "طي",
+      "notePlaceholder": "ملاحظة — مثلاً صباحاً أو بعد الجري",
+      "addDateAndNote": "إضافة تاريخ وملاحظة",
+      "submit": "تسجيل الوزن",
+      "submitting": "جارٍ التسجيل…",
+      "tip": "الأفضل تسجيله صباحاً بعد دخول الحمام",
+      "failed": "تعذر تسجيل الوزن"
+    },
+    "hero": {
+      "current": "الوزن الحالي",
+      "empty": "الميزان لا يعرف بوجودك بعد. غيّر ذلك.",
+      "changeGained": "زيادة {{amount}} {{unit}} خلال {{period}}",
+      "changeLost": "نقصان {{amount}} {{unit}} خلال {{period}}",
+      "changeNone": "{{amount}} {{unit}} بلا تغيير خلال {{period}}"
+    },
+    "period": {
+      "chip": {
+        "7d": "7 أيام",
+        "30d": "30 يوماً",
+        "90d": "90 يوماً",
+        "All": "الكل"
+      },
+      "span": {
+        "7d": "7 أيام",
+        "30d": "30 يوماً",
+        "90d": "90 يوماً",
+        "All": "كل المدة"
+      }
+    },
+    "stats": {
+      "avg": {
+        "label": "المعدل",
+        "tip": "متوسط الوزن للمدة المختارة",
+        "failed": "تعذر تحميل متوسط الوزن"
+      },
+      "low": {
+        "label": "الأدنى",
+        "tip": "أقل وزن مسجل في المدة",
+        "failed": "تعذر تحميل أدنى وزن"
+      },
+      "high": {
+        "label": "الأعلى",
+        "tip": "أعلى وزن مسجل في المدة",
+        "failed": "تعذر تحميل أعلى وزن"
+      }
+    },
+    "stale": "تعذر تحديثها — نعرض آخر ما حُمّل.",
+    "trend": {
+      "title": "المنحنى",
+      "loading": "جارٍ تحميل المنحنى",
+      "loadFailed": "تعذر تحميل المنحنى",
+      "noData": "لا بيانات لهذه المدة",
+      "needMore": "سجل قراءة أخرى لرؤية المنحنى"
+    },
+    "history": {
+      "title": "السجل",
+      "subject": "سجل وزنك",
+      "loadMoreFailed": "تعذر تحميل المزيد"
+    },
+    "detail": {
+      "back": "الوزن",
+      "loadFailed": "تعذر تحميل هذا السجل",
+      "gone": "هذا السجل لم يعد موجوداً.",
+      "backToWeight": "العودة إلى الوزن",
+      "editLabel": "تعديل السجل",
+      "deleteLabel": "حذف السجل",
+      "entryLabel": "سجل وزن",
+      "editing": "جارٍ التعديل…",
+      "editTitle": "تعديل السجل",
+      "date": "التاريخ"
+    },
+    "row": {
+      "options": "خيارات {{weight}} {{unit}}",
+      "link": "{{weight}} {{unit}}، {{date}}",
+      "editNamed": "تعديل {{weight}} {{unit}}، {{date}}",
+      "deleteNamed": "حذف {{weight}} {{unit}}، {{date}}"
+    },
+    "notePlaceholder": "مثلاً صباحاً أو بعد التمرين",
+    "logAnyway": "سجّل على أي حال"
+  },
+  "programs": {
+    "day": {
+      "rest": "يوم راحة",
+      "numbered": "اليوم {{number}}"
+    },
+    "createdOn": "أُنشئ {{date}}",
+    "title": "البرامج",
+    "subtitle": "قوالب تمارين قابلة لإعادة الاستخدام",
+    "newProgram": "برنامج جديد",
+    "startWorkout": "بدء التمرين",
+    "deleteConfirmTitle": "حذف البرنامج؟",
+    "deleteFailed": "تعذر حذف البرنامج",
+    "list": {
+      "searchPlaceholder": "ابحث في البرامج…",
+      "empty": {
+        "titleNone": "لا برامج بعد",
+        "title": "لم يُعثر على برامج",
+        "startHint": "أنشئ برنامجاً للبدء"
+      },
+      "loadFailed": "تعذر تحميل برامجك",
+      "errorSubject": "برامجك"
+    },
+    "stats": {
+      "total": "المجموع",
+      "totalUnit_one": "برنامج",
+      "totalUnit_zero": "برنامج",
+      "totalUnit_two": "برنامج",
+      "totalUnit_few": "برامج",
+      "totalUnit_many": "برنامجاً",
+      "totalUnit_other": "برنامج",
+      "totalFailed": "تعذر تحميل المجموع",
+      "avgExercises": "معدل التمارين",
+      "avgExercisesFailed": "تعذر تحميل معدل التمارين",
+      "perProgram": "لكل برنامج"
+    },
+    "card": {
+      "summary": "{{exercises}} · {{sets}}",
+      "restToday": "اليوم راحة",
+      "today": "اليوم: {{day}}",
+      "options": "خيارات",
+      "optionsNamed": "خيارات {{name}}",
+      "menuHeading": "البرنامج",
+      "startTitle": "بدء التمرين",
+      "restDayTitle": "اليوم راحة — افتح البرنامج",
+      "viewProgram": "عرض البرنامج",
+      "editProgram": "تعديل البرنامج",
+      "deleteProgram": "حذف البرنامج",
+      "editNamed": "تعديل {{name}}",
+      "deleteNamed": "حذف {{name}}",
+      "startNamed": "بدء {{name}}"
+    },
+    "detail": {
+      "loadFailed": "تعذر تحميل هذا البرنامج",
+      "gone": "هذا البرنامج لم يعد موجوداً.",
+      "backToPrograms": "العودة إلى البرامج",
+      "back": "البرامج",
+      "restDayTitle": "يوم راحة — لا شيء لتبدأه",
+      "start": "ابدأ",
+      "startLabel": "بدء التمرين",
+      "editLabel": "تعديل البرنامج",
+      "deleteLabel": "حذف البرنامج",
+      "suggestions": {
+        "title": "أهداف جديدة من آخر تمرين",
+        "set": "الجولة {{number}}",
+        "accept": "قبول {{name}} الجولة {{number}}",
+        "dismiss": "تجاهل {{name}} الجولة {{number}}",
+        "showLess": "عرض أقل",
+        "showAll": "عرض الكل ({{total}})",
+        "dismissAll": "تجاهل الكل",
+        "applyAll": "تطبيق الكل ({{total}})",
+        "saveFailed": "تعذر حفظ الأهداف.",
+        "exerciseFallback": "تمرين"
+      },
+      "stats": {
+        "cycle": "الدورة",
+        "exercises": "التمارين",
+        "totalSets": "مجموع الجولات"
+      },
+      "noDays": "لا أيام بعد",
+      "addDay": "إضافة يوم ←",
+      "restDayHint": "لا تمارين مجدولة — استرح وارجع أقوى.",
+      "noExercises": "لا تمارين في هذا اليوم بعد",
+      "target": "الهدف {{weight}} {{unit}}"
+    },
+    "form": {
+      "newTitle": "برنامج جديد",
+      "editTitle": "تعديل البرنامج",
+      "summary": "{{days}} • {{exercises}} • {{sets}}",
+      "errors": {
+        "nameRequired": "اسم البرنامج مطلوب",
+        "noDays": "أضف يوماً واحداً على الأقل",
+        "noExercises": "أضف تمريناً واحداً على الأقل ليوم تمرين"
+      },
+      "createFailed": "تعذر إنشاء البرنامج",
+      "updateFailed": "تعذر تحديث البرنامج",
+      "name": "اسم البرنامج",
+      "namePlaceholder": "مثلاً دفع سحب أرجل",
+      "notesPlaceholder": "وصف البرنامج أو أهدافه…",
+      "days": "الأيام",
+      "targetSets": "الجولات المستهدفة",
+      "daysHint": "يتكرر بهذا الترتيب",
+      "saveProgram": "حفظ البرنامج",
+      "dayEditor": {
+        "emptyInline": "لا تمارين بعد — أضف واحداً أعلاه.",
+        "emptyTitle": "لا تمارين بعد",
+        "emptySubtitle": "أضف تمريناً لهذا اليوم",
+        "notesPlaceholder": "مثلاً ركز على النزول ببطء",
+        "targetReps": "التكرارات المستهدفة",
+        "targetWeight": "الوزن المستهدف"
+      },
+      "daysEditor": {
+        "empty": "لا أيام بعد — أضف يوم تمرين أو راحة أدناه.",
+        "moveUp": "نقل اليوم للأعلى",
+        "moveDown": "نقل اليوم للأسفل",
+        "moveUpNumbered": "نقل اليوم {{number}} للأعلى",
+        "moveDownNumbered": "نقل اليوم {{number}} للأسفل",
+        "restPlaceholder": "يوم الراحة {{number}}",
+        "workout": "تمرين",
+        "rest": "راحة",
+        "collapse": "طي اليوم",
+        "expand": "توسيع اليوم",
+        "remove": "إزالة اليوم",
+        "addWorkoutDay": "إضافة يوم تمرين",
+        "addRestDay": "إضافة يوم راحة"
+      },
+      "dayPicker": {
+        "title": "اختر يوماً"
+      }
+    }
+  },
+  "food": {
+    "servings_one": "{{count}} حصة",
+    "servings_zero": "{{count}} حصة",
+    "servings_two": "{{count}} حصة",
+    "servings_few": "{{count}} حصص",
+    "servings_many": "{{count}} حصة",
+    "servings_other": "{{count}} حصة",
+    "customEntry": "إدخال مخصص",
+    "limitHint": "الإدخال الواحد يتسع لـ {{amount}} كحد أقصى",
+    "favorites": {
+      "addFailed": "تعذرت إضافة {{name}} إلى المفضلة.",
+      "removeFailed": "تعذرت إزالة {{name}} من المفضلة.",
+      "add": "إضافة {{name}} إلى المفضلة",
+      "remove": "إزالة {{name}} من المفضلة",
+      "subject": "مفضلتك",
+      "loadFailed": "تعذر تحميل المفضلة.",
+      "empty": {
+        "title": "لا مفضلة بعد",
+        "hint": "ضع نجمة على الأطعمة عند التسجيل لتظهر هنا"
+      }
+    },
+    "diary": {
+      "title": "الطعام",
+      "titleToday": "طعام اليوم",
+      "logFood": "تسجيل طعام",
+      "previousDay": "اليوم السابق",
+      "nextDay": "اليوم التالي",
+      "loadFailed": "تعذر تحميل سجل طعامك",
+      "deleteFailed": "تعذر حذف السجل.",
+      "addTo": "إضافة إلى {{meal}}",
+      "tapToAdd": "+ اضغط لإضافة طعام",
+      "deleteConfirm": "حذف <name>{{name}}</name>؟",
+      "calories": "السعرات",
+      "over": "زيادة {{amount}}",
+      "left": "المتبقي {{amount}}",
+      "goal": "الهدف {{amount}} kcal",
+      "totalsFailed": "تعذر تحميل مجموع اليوم",
+      "items_one": "{{count}} عنصر",
+      "items_zero": "{{count}} عنصر",
+      "items_two": "{{count}} عنصر",
+      "items_few": "{{count}} عناصر",
+      "items_many": "{{count}} عنصراً",
+      "items_other": "{{count}} عنصر",
+      "filteredCount": "{{shown}} من {{total}}",
+      "searchPlaceholder": "ابحث في طعام هذا اليوم…",
+      "noMatches": "لا نتائج لـ «{{query}}»",
+      "empty": {
+        "title": "لم يُسجل طعام بعد",
+        "hint": "اضغط لتسجيل أول وجبة"
+      },
+      "entryUpdated": "تحدث السجل",
+      "addedTo": "أضيف إلى {{meal}}",
+      "totalsFailedHint": "حدث خطأ من طرفنا."
+    },
+    "entry": {
+      "logged": "المسجل",
+      "deleteFailed": "تعذر حذف السجل",
+      "deleteTitle": "حذف السجل؟",
+      "loadFailed": "تعذر تحميل هذا السجل",
+      "gone": "هذا السجل لم يعد موجوداً.",
+      "backToNutrition": "العودة إلى التغذية",
+      "back": "التغذية",
+      "editLabel": "تعديل السجل",
+      "deleteLabel": "حذف السجل",
+      "servingSize": "حجم الحصة",
+      "amount": "الكمية",
+      "meal": "الوجبة",
+      "optionsNamed": "خيارات {{name}}"
+    },
+    "page": {
+      "title": "التغذية",
+      "subtitle": "المغذيات والوجبات"
+    },
+    "meal": {
+      "breakfast": "الفطور",
+      "lunch": "الغداء",
+      "dinner": "العشاء",
+      "snacks": "وجبات خفيفة"
+    },
+    "macro": {
+      "protein": "بروتين",
+      "carbs": "كربوهيدرات",
+      "fat": "دهون",
+      "fiber": "ألياف",
+      "proteinInitial": "ب",
+      "carbsInitial": "ك",
+      "fatInitial": "د"
+    },
+    "view": {
+      "diary": "اليوميات",
+      "trends": "المنحنيات"
+    },
+    "trends": {
+      "dailyAverage": "المعدل اليومي · {{period}}",
+      "averageFailed": "تعذر تحميل معدل {{macro}}"
+    },
+    "history": {
+      "title": "سجل المغذيات",
+      "loading": "جارٍ التحميل…",
+      "loadFailed": "تعذر تحميل سجلك",
+      "empty": "لا بيانات بعد — ابدأ بتسجيل وجباتك"
+    },
+    "log": {
+      "title": "تسجيل طعام",
+      "editTitle": "تعديل الطعام",
+      "details": "التفاصيل",
+      "newEntry": "إدخال جديد",
+      "backToFood": "العودة إلى الطعام",
+      "submit": "تسجيل",
+      "saveChanges": "حفظ التغييرات",
+      "editLoadFailed": "تعذر تحميل السجل.",
+      "searchPlaceholder": "ابحث عن طعام…",
+      "scan": "مسح",
+      "scanLabel": "مسح الباركود",
+      "tab": {
+        "recent": "الأخيرة",
+        "favorites": "المفضلة",
+        "search": "بحث"
+      },
+      "rateLimited": "طلبات كثيرة — انتظر قليلاً وحاول مرة أخرى",
+      "searchUnavailable": "البحث عن الطعام غير متاح — أدخل التفاصيل يدوياً",
+      "enterManually": "إدخال يدوي",
+      "rereadFailed": "تعذرت إعادة قراءة هذا المنتج.",
+      "quickAdd": "إضافة سريعة {{kcal}} kcal",
+      "noMacroBreakdown": "لا تفاصيل للمغذيات",
+      "recent": {
+        "subject": "ما سجلته اليوم",
+        "loadFailed": "تعذر تحميل ما سجلته اليوم.",
+        "empty": {
+          "title": "لا عناصر حديثة اليوم",
+          "hint": "ابحث أو امسح لتسجيل طعام"
+        }
+      },
+      "search": {
+        "emptyTitle": "ابحث بين ملايين الأطعمة",
+        "emptyHint": "أو امسح الباركود",
+        "searching": "جارٍ البحث…",
+        "noResults": "لا نتائج لـ \"{{query}}\"",
+        "manualEntry": "+ إدخال \"{{query}}\" يدوياً",
+        "manualEntryWide": "＋ إدخال \"{{query}}\" يدوياً"
+      },
+      "staleServing": "{{note}} نعرض نتائج البحث، وهي دائماً لكل {{serving}}.",
+      "per": "لكل {{serving}}",
+      "servingEach": "({{serving}} للواحدة)",
+      "servings": "الحصص",
+      "amountIn": "الكمية بـ {{unit}}",
+      "decreaseAmount": "إنقاص الكمية",
+      "increaseAmount": "زيادة الكمية",
+      "decreaseServings": "إنقاص الحصص",
+      "increaseServings": "زيادة الحصص",
+      "enterAmount": "أدخل كمية لتسجيلها",
+      "enterAmountIn": "أدخل كمية بـ {{unit}} لتسجيلها",
+      "servingsOf_one": "{{count}} حصة من {{serving}}",
+      "servingsOf_zero": "{{count}} حصة من {{serving}}",
+      "servingsOf_two": "{{count}} حصة من {{serving}}",
+      "servingsOf_few": "{{count}} حصص من {{serving}}",
+      "servingsOf_many": "{{count}} حصة من {{serving}}",
+      "servingsOf_other": "{{count}} حصة من {{serving}}",
+      "when": "الوقت",
+      "lookupFailedHint": "تعذر البحث عن هذا الباركود.",
+      "lookupFailed": "تعذر البحث عن هذا الباركود"
+    },
+    "scan": {
+      "title": "مسح الباركود",
+      "close": "إغلاق الماسح",
+      "httpsTitle": "الكاميرا تحتاج HTTPS",
+      "httpsBody": "المتصفحات تسمح بالكاميرا في الصفحات الآمنة فقط. هذا الموقع يعمل عبر <mono>http://</mono> — ضعه خلف وكيل عكسي بـ HTTPS لمسح الباركود.",
+      "searchByName": "ابحث بالاسم بدلاً من ذلك",
+      "unavailable": "الكاميرا غير متاحة",
+      "hint": "وجّه الكاميرا نحو الباركود وسيُمسح تلقائياً",
+      "deniedTitle": "رُفض الوصول إلى الكاميرا",
+      "neededTitle": "مطلوب إذن الكاميرا",
+      "deniedBody": "فعّل إذن الكاميرا لعافيتك من إعدادات جهازك لمسح الباركود.",
+      "neededBody": "اسمح بالكاميرا لمسح باركود الطعام.",
+      "allow": "السماح بالكاميرا",
+      "point": "وجّه نحو الباركود"
+    },
+    "lookup": {
+      "looking": "جارٍ البحث عن المنتج…",
+      "slow": "ما زلنا نبحث. قد يستغرق بضع ثوانٍ."
+    }
+  },
+  "workouts": {
+    "keepAwakeUnavailable": "قد تنطفئ الشاشة أثناء التمرين. افتح عافيتك عبر HTTPS لإبقائها مضاءة.",
+    "defaultName": "تمرين — {{date}}",
+    "stats": {
+      "total": "المجموع",
+      "logged": "مسجلة",
+      "thisMonth": "هذا الشهر",
+      "sessions_one": "جلسة",
+      "sessions_zero": "جلسة",
+      "sessions_two": "جلسة",
+      "sessions_few": "جلسات",
+      "sessions_many": "جلسة",
+      "sessions_other": "جلسة",
+      "avgTime": "معدل الوقت",
+      "min": "د",
+      "totalFailed": "تعذر تحميل المجموع",
+      "thisMonthFailed": "تعذر تحميل هذا الشهر",
+      "avgTimeFailed": "تعذر تحميل معدل الوقت"
+    },
+    "list": {
+      "title": "التمارين",
+      "subtitle": "تابع وراجع جلسات تدريبك",
+      "logWorkout": "تسجيل تمرين",
+      "browseExercises": "تصفح التمارين",
+      "searchPlaceholder": "ابحث في الجلسات…",
+      "empty": {
+        "titleNone": "لا جلسات بعد",
+        "title": "لم يُعثر على جلسات",
+        "startHint": "سجل تمريناً للبدء"
+      },
+      "loadFailed": "تعذر تحميل جلساتك",
+      "errorSubject": "جلساتك"
+    },
+    "deleteFailed": "تعذر حذف الجلسة",
+    "deleteConfirmTitle": "حذف الجلسة؟",
+    "toast": {
+      "newPr": "رقم قياسي جديد في {{name}}",
+      "newTargets": "أهداف جديدة في {{name}}",
+      "reviewUpdates_one": "اضغط لمراجعة {{count}} تحديث",
+      "reviewUpdates_zero": "اضغط لمراجعة {{count}} تحديث",
+      "reviewUpdates_two": "اضغط لمراجعة {{count}} تحديث",
+      "reviewUpdates_few": "اضغط لمراجعة {{count}} تحديثات",
+      "reviewUpdates_many": "اضغط لمراجعة {{count}} تحديثاً",
+      "reviewUpdates_other": "اضغط لمراجعة {{count}} تحديث",
+      "saved": "حُفظ التمرين",
+      "tapToView": "اضغط للعرض",
+      "discarded": "أُلغي التمرين",
+      "tapToUndo": "اضغط للتراجع"
+    },
+    "card": {
+      "minutes": "{{minutes}} د",
+      "options": "خيارات",
+      "optionsNamed": "خيارات {{name}}",
+      "menuHeading": "الجلسة",
+      "editWorkout": "تعديل الجلسة",
+      "deleteWorkout": "حذف الجلسة",
+      "editNamed": "تعديل {{name}}",
+      "deleteNamed": "حذف {{name}}",
+      "totalVolume": "الحجم الكلي {{amount}} {{unit}}"
+    },
+    "detail": {
+      "loadFailed": "تعذر تحميل هذه الجلسة",
+      "gone": "هذه الجلسة لم تعد موجودة.",
+      "backToWorkouts": "العودة إلى الجلسات",
+      "back": "التمارين",
+      "editLabel": "تعديل الجلسة",
+      "deleteLabel": "حذف الجلسة",
+      "duration": "المدة",
+      "minutesUnit": "د",
+      "sets": "الجولات",
+      "volume": "الحجم",
+      "best": "الأفضل"
+    },
+    "start": {
+      "title": "بدء التمرين",
+      "inProgress": "يوجد تمرين جارٍ",
+      "resume": "متابعة",
+      "discard": "إلغاء",
+      "quick": "بدء سريع",
+      "quickHint": "ابدأ فارغاً وأضف التمارين أثناء التدريب",
+      "fromProgram": "البدء من برنامج",
+      "fromProgramHint": "حمّل يوماً من برنامج محفوظ",
+      "loadingPrograms": "جارٍ تحميل البرامج…",
+      "noPrograms": "لا برامج بعد",
+      "createFirst": "أنشئ أول برنامج ←",
+      "noDays": "لا أيام بعد"
+    },
+    "form": {
+      "logTitle": "تسجيل تمرين",
+      "editTitle": "تعديل الجلسة",
+      "summary": "{{exercises}} • {{sets}}",
+      "summaryWithWeight": "{{exercises}} • {{sets}} • {{weight}} {{unit}}",
+      "errors": {
+        "nameRequired": "اسم التمرين مطلوب",
+        "noExercises": "أضف تمريناً واحداً على الأقل"
+      },
+      "createFailed": "تعذر إنشاء الجلسة",
+      "updateFailed": "تعذر تحديث الجلسة",
+      "name": "اسم الجلسة",
+      "namePlaceholder": "مثلاً يوم الأرجل أو يوم الدفع",
+      "date": "التاريخ",
+      "durationMinutes": "المدة (بالدقائق)",
+      "duration": "المدة",
+      "durationHm": "{{hours}} س {{minutes}} د",
+      "notesPlaceholder": "كيف كان شعورك؟ هل حققت رقماً جديداً؟",
+      "totalUnit": "مجموع {{unit}}",
+      "exercises": "التمارين",
+      "sets": "الجولات",
+      "loadProgram": "تحميل برنامج",
+      "addExerciseLabel": "إضافة تمرين",
+      "removeExercise": "إزالة التمرين",
+      "removeNamed": "إزالة {{name}}",
+      "exerciseFallback": "التمرين",
+      "exerciseNotesPlaceholder": "مثلاً شعرت بقوة",
+      "restBetweenSets": "الراحة بين الجولات",
+      "set": "الجولة",
+      "reps": "التكرارات",
+      "weight": "الوزن",
+      "setWeightLabel": "وزن الجولة",
+      "setRepsLabel": "تكرارات الجولة",
+      "addSet": "إضافة جولة",
+      "removeSet": "إزالة الجولة",
+      "note": "ملاحظة",
+      "addNoteLabel": "إضافة ملاحظة للتمرين",
+      "removeNoteLabel": "إزالة الملاحظة",
+      "exerciseNotesLabel": "ملاحظات التمرين",
+      "saveWorkout": "حفظ الجلسة",
+      "empty": {
+        "createTitle": "لا تمارين بعد",
+        "createHint": "أضف تمريناً أو حمّل برنامجاً للبدء",
+        "editTitle": "لا تمارين",
+        "editHint": "أضف تمريناً لهذه الجلسة"
+      },
+      "durationField": {
+        "decrease": "تقليل المدة",
+        "increase": "زيادة المدة",
+        "inputLabel": "المدة بالدقائق",
+        "unit": "د"
+      },
+      "programPicker": {
+        "title": "تحميل من برنامج",
+        "pickProgram": "اختر برنامجاً لتعبئة التمارين",
+        "pickDay": "اختر يوماً لتعبئة التمارين",
+        "loadFailed": "تعذر تحميل برامجك.",
+        "back": "→ العودة إلى البرامج",
+        "workoutDays_one": "{{count}} يوم تمرين",
+        "workoutDays_zero": "{{count}} يوم تمرين",
+        "workoutDays_two": "{{count}} يوم تمرين",
+        "workoutDays_few": "{{count}} أيام تمرين",
+        "workoutDays_many": "{{count}} يوم تمرين",
+        "workoutDays_other": "{{count}} يوم تمرين",
+        "noExercises": "لا تمارين بعد",
+        "restDays": "أيام الراحة",
+        "createFirst": "أنشئ برنامجاً أولاً",
+        "close": "إغلاق اختيار البرنامج",
+        "noMatches": "لا برامج مطابقة"
+      }
+    },
+    "active": {
+      "noWorkout": {
+        "title": "لا يوجد تمرين جارٍ",
+        "hintHome": "ابدأ واحداً من الصفحة الرئيسية",
+        "hintTab": "ابدأ واحداً من تبويب التمارين",
+        "goHome": "الرئيسية",
+        "goWorkouts": "إلى التمارين"
+      },
+      "setsDone_one": "الجولات المنجزة {{done}}/{{count}}",
+      "setsDone_zero": "الجولات المنجزة {{done}}/{{count}}",
+      "setsDone_two": "الجولات المنجزة {{done}}/{{count}}",
+      "setsDone_few": "الجولات المنجزة {{done}}/{{count}}",
+      "setsDone_many": "الجولات المنجزة {{done}}/{{count}}",
+      "setsDone_other": "الجولات المنجزة {{done}}/{{count}}",
+      "finish": "إنهاء",
+      "empty": {
+        "title": "لا تمارين بعد",
+        "hint": "أضف تمارين أدناه"
+      },
+      "setProgress": "{{done}}/{{total}} جولة",
+      "removeExercise": "إزالة التمرين",
+      "notes": {
+        "placeholder": "أضف ملاحظة…",
+        "add": "+ إضافة ملاحظة",
+        "placeholderMobile": "+ إضافة ملاحظة…",
+        "label": "ملاحظات {{name}}"
+      },
+      "columns": {
+        "set": "الجولة",
+        "reps": "التكرارات",
+        "weight": "الوزن",
+        "done": "تم"
+      },
+      "completeSet": "إكمال الجولة {{number}}، {{name}}",
+      "completedSet": "اكتملت الجولة {{number}}، {{name}}",
+      "repsLabel": "التكرارات، الجولة {{number}}، {{name}}",
+      "weightLabel": "الوزن، الجولة {{number}}، {{name}}",
+      "removeSet": "إزالة الجولة",
+      "previous": "التمرين السابق",
+      "addSet": "إضافة جولة",
+      "next": "التالي",
+      "addExercise": "إضافة تمرين",
+      "cancelWorkout": "إلغاء التمرين",
+      "saveFailed": "تعذر حفظ الجلسة",
+      "keepGoing": "متابعة",
+      "finishConfirm": {
+        "title": "إنهاء التمرين؟",
+        "message_one": "اكتمل {{done}} من {{count}} جولة. ستُحفظ الجلسة.",
+        "message_zero": "اكتمل {{done}} من {{count}} جولة. ستُحفظ الجلسة.",
+        "message_two": "اكتمل {{done}} من {{count}} جولة. ستُحفظ الجلسة.",
+        "message_few": "اكتمل {{done}} من {{count}} جولات. ستُحفظ الجلسة.",
+        "message_many": "اكتمل {{done}} من {{count}} جولة. ستُحفظ الجلسة.",
+        "message_other": "اكتمل {{done}} من {{count}} جولة. ستُحفظ الجلسة.",
+        "unfinished_one": "اكتمل {{done}} من {{total}} جولة. جولات غير مكتملة لن تُحفظ: {{count}}.",
+        "unfinished_zero": "اكتمل {{done}} من {{total}} جولة. جولات غير مكتملة لن تُحفظ: {{count}}.",
+        "unfinished_two": "اكتمل {{done}} من {{total}} جولة. جولات غير مكتملة لن تُحفظ: {{count}}.",
+        "unfinished_few": "اكتمل {{done}} من {{total}} جولة. جولات غير مكتملة لن تُحفظ: {{count}}.",
+        "unfinished_many": "اكتمل {{done}} من {{total}} جولة. جولات غير مكتملة لن تُحفظ: {{count}}.",
+        "unfinished_other": "اكتمل {{done}} من {{total}} جولة. جولات غير مكتملة لن تُحفظ: {{count}}."
+      },
+      "nothingToSave": {
+        "title": "لا شيء للحفظ بعد",
+        "message": "لم تكتمل أي جولة. علّم جولة كمنجزة لحفظها، أو ألغِ التمرين."
+      },
+      "cancelConfirm": {
+        "title": "إلغاء التمرين؟",
+        "message": "ستفقد كل التقدم."
+      },
+      "markSetDone": "الجولة {{number}}، علّمها منجزة"
+    },
+    "reorder": {
+      "title": "إعادة ترتيب التمارين",
+      "button": "ترتيب",
+      "hint": "اضغط مطولاً واسحب الصف، أو استخدم الأسهم.",
+      "moveUp": "نقل {{name}} للأعلى",
+      "moveDown": "نقل {{name}} للأسفل",
+      "moved": "نُقل {{name}} إلى الموضع {{position}} من {{count}}"
+    },
+    "superset": {
+      "label": "مجموعة مركبة {{letter}}",
+      "badge": "مركبة {{letter}} · {{position}} من {{total}}",
+      "position": "المجموعة المركبة {{letter}}، التمرين {{position}} من {{total}}",
+      "linkNext": "دمج {{a}} مع {{b}}",
+      "unlinkNext": "فك {{a}} عن {{b}}",
+      "linkedA11y": "أصبح {{a}} و{{b}} مجموعة مركبة",
+      "unlinkedA11y": "لم يعد {{a}} و{{b}} مجموعة مركبة",
+      "restAfterRound": "الراحة بعد الدورة: {{rest}}",
+      "restAfterRoundHint": "الراحة بعد الدورة",
+      "movedUnlinked": "نُقل {{name}} إلى الموضع {{position}} من {{count}} وفُك عن مجموعته المركبة",
+      "subtitle": "جولات بالتناوب · راحة بعد كل دورة",
+      "round": "الدورة {{n}} من {{total}}",
+      "groupLabel": "المجموعة المركبة {{letter}}، التمارين: {{count}}، الدورة {{n}} من {{total}}",
+      "groupLabelStatic": "المجموعة المركبة {{letter}}، التمارين: {{count}}، {{rounds}}",
+      "roundsCount_one": "{{count}} دورة",
+      "roundsCount_zero": "{{count}} دورة",
+      "roundsCount_two": "{{count}} دورة",
+      "roundsCount_few": "{{count}} دورات",
+      "roundsCount_many": "{{count}} دورة",
+      "roundsCount_other": "{{count}} دورة",
+      "straightTo": "مباشرة إلى {{name}} بلا راحة",
+      "restThen": "استرح {{rest}} بعد {{name}}، ثم الدورة {{n}}",
+      "restThenLast": "استرح {{rest}} بعد {{name}}",
+      "upNext": "التالي",
+      "toastNext": "اكتمل {{done}}. التالي {{next}} بلا راحة.",
+      "menuPair": "تركيب مع…",
+      "menuRemove": "إزالة من المجموعة المركبة {{letter}}",
+      "addPill": "تركيب",
+      "addPillLabel": "تركيب {{a}} مع {{b}}",
+      "sheet": {
+        "title": "إنشاء مجموعة مركبة",
+        "body": "بدّل جولة من كل تمرين ثم استرح مرة في كل دورة. يوفر الوقت بين الجولات.",
+        "pairWith": "ركّب {{name}} مع",
+        "movesNextTo": "{{muscle}} · سينتقل بجانب {{name}}",
+        "moves": "سينتقل بجانب {{name}}",
+        "restNote": "ستستريح {{rest}} بعد {{name}} في كل دورة. يمكنك تغييرها متى شئت.",
+        "create": "إنشاء المجموعة",
+        "cancel": "إلغاء",
+        "empty": "لا توجد تمارين أخرى للتركيب معها."
+      }
+    },
+    "rest": {
+      "off": "إيقاف",
+      "custom": "مخصص",
+      "stepDown5Spoken": "ناقص 5 ثوانٍ",
+      "stepUp5Spoken": "زائد 5 ثوانٍ",
+      "secondsLabel": "ثواني الراحة",
+      "secondsUnit": "ث",
+      "label": {
+        "ready": "جاهز",
+        "paused": "متوقف",
+        "resting": "راحة",
+        "over": "انتهت الراحة",
+        "upNext": "الجولة {{next}} هي التالية",
+        "setDone": "اكتملت الجولة {{done}}",
+        "setDonePaused": "اكتملت الجولة {{done}} · متوقف",
+        "setDoneNext": "اكتملت الجولة {{done}} · التالية {{next}}",
+        "setDoneNextExercise": "اكتملت الجولة {{done}} · التالي {{name}}",
+        "setDoneResting": "اكتملت الجولة {{done}} · راحة",
+        "overNext": "انتهت الراحة · التالية الجولة {{next}}"
+      },
+      "pause": "إيقاف مؤقت الراحة",
+      "resume": "متابعة مؤقت الراحة",
+      "shorten": "تقصير الراحة 15 ثانية",
+      "extend": "تمديد الراحة 15 ثانية",
+      "skip": "تخطي"
+    }
+  },
+  "gym": {
+    "workout": "التمرين",
+    "minimize": "تصغير",
+    "elapsed": "وقت التمرين {{time}}",
+    "discardWorkout": "إلغاء التمرين",
+    "discard": {
+      "title": "إلغاء التمرين؟",
+      "message": "ينهي هذا التمرين دون حفظ، وستفقد كل التقدم.",
+      "confirm": "إلغاء التمرين"
+    },
+    "menu": {
+      "more": "خيارات أخرى",
+      "addExercise": "إضافة تمرين",
+      "allExercises": "كل التمارين",
+      "overview": "ملخص التمرين",
+      "subtitle": "{{name}} · {{sets}}",
+      "supersetNext": "تركيب مع التالي",
+      "unlinkNext": "فك عن التالي"
+    },
+    "exercises": {
+      "title": "التمارين",
+      "switcher": "التمارين، {{current}} من {{total}}، {{name}}",
+      "rowUpcoming": "{{number}}. {{name}}، {{sets}}",
+      "rowCurrent": "{{number}}. {{name}}، التمرين الحالي، {{sets}}",
+      "rowDone": "{{number}}. {{name}}، منجز، {{sets}}"
+    },
+    "labels": {
+      "sets": "الجولات",
+      "reps": "التكرارات",
+      "weight": "الوزن",
+      "repsName": "التكرارات"
+    },
+    "overview": {
+      "exercises": "التمارين",
+      "totalSets": "مجموع الجولات",
+      "muscles": "العضلات",
+      "empty": "لم تُضف تمارين بعد",
+      "startWorkout": "بدء التمرين",
+      "continueWorkout": "متابعة التمرين"
+    },
+    "info": {
+      "restTitle": "الراحة بين الجولات",
+      "restHint": "يبدأ تلقائياً عند إكمال جولة",
+      "begin": "ابدأ التمرين"
+    },
+    "set": {
+      "chip": "الجولة {{number}}",
+      "chipDone": "الجولة {{number}}، منجزة",
+      "chipResting": "الجولة {{number}}، راحة",
+      "chipDoneResting": "الجولة {{number}}، منجزة، راحة"
+    },
+    "target": {
+      "label": "الهدف",
+      "repsUnknown": "— تكرار"
+    },
+    "supersetNext": "التالي: {{name}}، الجولة {{number}}",
+    "completeSet": "إكمال الجولة",
+    "completed": "اكتملت",
+    "removeSet": "إزالة هذه الجولة",
+    "removeExercise": "إزالة هذا التمرين",
+    "removeConfirm": {
+      "title": "إزالة التمرين؟",
+      "message_one": "سيُزال {{name}} من التمرين مع جولاته المنجزة: {{count}}.",
+      "message_zero": "سيُزال {{name}} من التمرين مع جولاته المنجزة: {{count}}.",
+      "message_two": "سيُزال {{name}} من التمرين مع جولاته المنجزة: {{count}}.",
+      "message_few": "سيُزال {{name}} من التمرين مع جولاته المنجزة: {{count}}.",
+      "message_many": "سيُزال {{name}} من التمرين مع جولاته المنجزة: {{count}}.",
+      "message_other": "سيُزال {{name}} من التمرين مع جولاته المنجزة: {{count}}.",
+      "confirm": "إزالة"
+    },
+    "previousSet": "الجولة السابقة",
+    "nextSet": "الجولة التالية",
+    "nav": {
+      "info": "معلومات",
+      "finishWorkout": "إنهاء التمرين",
+      "nextExercise": "التمرين التالي"
+    },
+    "superset": {
+      "pill": "مركبة {{letter}} · الدورة {{n}} من {{total}}",
+      "then": "ثم",
+      "thenRest": "استرح {{rest}} ثم {{name}} · الجولة {{number}}",
+      "thenStraight": "مباشرة إلى {{name}} · الجولة {{number}} بلا راحة",
+      "roundDone": "اكتملت الدورة {{n}} من {{total}}",
+      "thisRound": "هذه الدورة",
+      "upNext": "التالي",
+      "upNextFinal": "التالي · الدورة الأخيرة",
+      "finalRound": "الدورة الأخيرة",
+      "next": "التالي: {{name}}، الجولة {{number}}",
+      "upNextTitle": "{{name}} · الجولة {{number}}",
+      "upNextThen": "{{detail}}، ثم مباشرة إلى {{name}}",
+      "effort": "{{weight}} × {{reps}}"
+    }
+  },
+  "exercises": {
+    "estimated1rm": "أقصى تكرار تقديري: {{weight}} {{unit}} · {{date}}",
+    "equipment": {
+      "body-only": "وزن الجسم",
+      "barbell": "بار",
+      "dumbbell": "دمبل",
+      "machine": "جهاز",
+      "cable": "كيبل",
+      "kettlebells": "كيتل بل",
+      "bands": "أحزمة مطاطية",
+      "medicine-ball": "كرة طبية",
+      "e-z-curl-bar": "بار متعرج",
+      "exercise-ball": "كرة تمارين",
+      "foam-roll": "أسطوانة تدليك",
+      "none": "بدون",
+      "other": "أخرى"
+    },
+    "category": {
+      "strength": "قوة",
+      "stretching": "إطالة",
+      "plyometrics": "بليومترك",
+      "strongman": "رجل قوي",
+      "powerlifting": "رفعات القوة",
+      "cardio": "كارديو",
+      "olympic-weightlifting": "رفع أثقال أولمبي"
+    },
+    "muscle": {
+      "abdominals": "عضلات البطن",
+      "abductors": "المبعدات",
+      "abs": "البطن",
+      "adductors": "المقربات",
+      "back": "الظهر",
+      "biceps": "البايسبس",
+      "calves": "بطة الساق",
+      "chest": "الصدر",
+      "core": "الجذع",
+      "forearms": "الساعدان",
+      "full-body": "الجسم كامل",
+      "glutes": "الأرداف",
+      "hamstrings": "الفخذ الخلفي",
+      "lats": "المجنص",
+      "legs": "الأرجل",
+      "lower-back": "أسفل الظهر",
+      "middle-back": "وسط الظهر",
+      "neck": "الرقبة",
+      "obliques": "البطن الجانبية",
+      "other": "أخرى",
+      "quadriceps": "الفخذ الأمامي",
+      "shoulders": "الأكتاف",
+      "traps": "الترابيس",
+      "triceps": "الترايسبس"
+    },
+    "browse": {
+      "title": "التمارين",
+      "subtitle": "ابحث عن أي تمرين وطريقة أدائه",
+      "backToWorkouts": "العودة إلى الجلسات",
+      "muscle": "العضلة",
+      "equipment": "المعدات",
+      "noMatchTitle": "لا تمارين مطابقة",
+      "noMatchBody": "جرب بحثاً آخر أو أعد ضبط التصفية."
+    },
+    "picker": {
+      "catalogEmpty": {
+        "title": "مكتبة التمارين ما زالت تُحمّل",
+        "body": "حاول بعد قليل."
+      },
+      "title": "إضافة تمرين",
+      "search": "ابحث عن تمرين…",
+      "loading": "جارٍ تحميل التمارين…",
+      "loadingShort": "جارٍ التحميل…",
+      "loadMore": "تحميل المزيد",
+      "empty": "لم يُعثر على تمارين",
+      "errorSubject": "هذه التمارين",
+      "close": "إغلاق اختيار التمرين",
+      "backToWorkout": "العودة إلى التمرين",
+      "loadFailed": "تعذر تحميل التمارين",
+      "loadMoreFailed": "تعذر تحميل المزيد من التمارين",
+      "noMatch": "لا تمارين تطابق «{{query}}»"
+    },
+    "detail": {
+      "loadFailed": "تعذر تحميل هذا التمرين",
+      "musclesWorked": "العضلات المستهدفة",
+      "primary": "الرئيسية",
+      "secondary": "الثانوية",
+      "alsoWorks": "يعمل أيضاً",
+      "yourBest": "أفضل ما حققت",
+      "personalBest": "الرقم الشخصي",
+      "estimated1rm": "أقصى تكرار تقديري",
+      "weightProgression": "تطور الوزن",
+      "noPeriodData": "لا بيانات لهذه المدة",
+      "maxWeight": "أعلى وزن",
+      "instructions": "التعليمات",
+      "bestSet_one": "{{unit}} × {{count}} تكرار",
+      "bestSet_zero": "{{unit}} × {{count}} تكرار",
+      "bestSet_two": "{{unit}} × {{count}} تكرار",
+      "bestSet_few": "{{unit}} × {{count}} تكرارات",
+      "bestSet_many": "{{unit}} × {{count}} تكراراً",
+      "bestSet_other": "{{unit}} × {{count}} تكرار",
+      "period": {
+        "1m": "شهر",
+        "3m": "3 أشهر",
+        "6m": "6 أشهر",
+        "All": "الكل"
+      },
+      "noInstructions": "لا تعليمات لهذا التمرين بعد.",
+      "musclesWorkedLabel": "يعمل {{primary}}، وأيضاً {{secondary}}",
+      "musclesWorkedLabelOne": "يعمل {{primary}}"
+    },
+    "custom": {
+      "badge": "مخصص",
+      "badgeLabel": "تمرين مخصص",
+      "photo": {
+        "add": "إضافة صورة",
+        "addHint": "تساعدك على تمييزه في القوائم",
+        "replace": "تغيير الصورة",
+        "remove": "إزالة الصورة",
+        "choose": "اختيار صورة",
+        "take": "التقاط صورة",
+        "sourceTitle": "إضافة صورة",
+        "preview": "صورة هذا التمرين",
+        "pending": "الصورة جاهزة وتُرفع عند الحفظ.",
+        "uploadFailed": "تعذر رفع الصورة.",
+        "removeFailed": "تعذرت إزالة الصورة.",
+        "pickFailed": "تعذرت قراءة الصورة. جرب غيرها.",
+        "deniedLibrary": "لا يستطيع عافيتك فتح صورك. اسمح بالوصول من إعدادات جهازك ثم حاول مرة أخرى.",
+        "deniedCamera": "لا يستطيع عافيتك استخدام الكاميرا. اسمح بالوصول من إعدادات جهازك ثم حاول مرة أخرى.",
+        "savedNoPhoto": "حُفظ التمرين لكن صورته لم تُرفع.",
+        "tryAgain": "حاول مرة أخرى",
+        "skip": "تخطٍّ الآن",
+        "updated": "تحدثت الصورة",
+        "removed": "أزيلت الصورة",
+        "openSettings": "فتح الإعدادات"
+      },
+      "createRow": "إنشاء «{{name}}»",
+      "createRowHint": "تمرين مخصص تراه أنت فقط",
+      "createRowLabel": "إنشاء تمرين مخصص باسم {{name}}",
+      "yours": "تمارينك",
+      "catalog": "من الفهرس",
+      "loadFailed": "تعذر تحميل تمارينك.",
+      "filterShow": "عرض",
+      "mineOption": "المخصصة فقط",
+      "seeAllMine": "عرض كل تمارينك",
+      "add": "إنشاء تمرين",
+      "mineEmptyTitle": "لا تمارين مخصصة بعد",
+      "mineEmptyBody": "أنشئ واحداً بزر +، أو من البحث عند إضافة تمرين إلى جلسة.",
+      "mineNoMatchTitle": "لا تطابق بين تمارينك",
+      "archivedNote": "مؤرشف. مخفي من البحث، وسجلك يبقى هنا.",
+      "mergedNote": "مدموج. سجلك له صار تحت تمرين آخر.",
+      "viewMerged": "عرض ذلك التمرين",
+      "form": {
+        "createTitle": "تمرين جديد",
+        "editTitle": "تعديل التمرين",
+        "privateNote": "تراه أنت فقط.",
+        "name": "الاسم",
+        "namePlaceholder": "مثلاً رفع السمانة جالساً",
+        "nameRequired": "أعطِ التمرين اسماً.",
+        "nameControlChars": "لا يمكن أن يحتوي الاسم على رموز تحكم.",
+        "muscle": "العضلة الرئيسية",
+        "muscleRequired": "اختر العضلة الرئيسية.",
+        "equipment": "المعدات",
+        "category": "الفئة",
+        "otherMuscles": "عضلات أخرى",
+        "otherMusclesHint": "اضغط على أي عضلات أخرى يشغلها، حتى {{max}}",
+        "otherMusclesLocked": "اختر العضلة الرئيسية أولاً، ثم اضغط على البقية",
+        "instructions": "التعليمات",
+        "instructionsHint": "خطوة في كل سطر",
+        "instructionsPlaceholder": "قف مستقيماً والقدمان بعرض الورك",
+        "nearMatches": "موجود في الفهرس",
+        "nearMatchesHint": "استخدم أحدها، أو تابع لإنشاء تمرينك.",
+        "useMatch": "استخدام {{name}}",
+        "createAndAdd": "إنشاء وإضافة",
+        "create": "إنشاء",
+        "save": "حفظ",
+        "saveFailed": "تعذر حفظ التمرين",
+        "muscleHint": "اضغط على الشكل، أو انتقل إلى القائمة",
+        "useThis": "استخدم هذا",
+        "loadFailed": "تعذر فتح التمرين",
+        "notEditable": "يمكن تعديل تمارينك فقط.",
+        "group": {
+          "chestShoulders": "الصدر والأكتاف",
+          "arms": "الذراعان",
+          "back": "الظهر",
+          "core": "الجذع",
+          "legs": "الأرجل"
+        }
+      },
+      "actions": {
+        "menu": "إجراءات التمرين",
+        "merge": "دمج مع تمرين آخر…",
+        "archive": "أرشفة",
+        "unarchive": "استعادة",
+        "archived": "أُرشف التمرين",
+        "unarchived": "استُعيد التمرين",
+        "archiveFailed": "تعذرت أرشفة التمرين",
+        "unarchiveFailed": "تعذرت استعادة التمرين"
+      },
+      "merge": {
+        "pickerTitle": "دمج «{{name}}» في",
+        "pickerSubtitle": "اختر التمرين الذي سيبقى",
+        "confirmTitle": "الدمج في «{{name}}»؟",
+        "body": "كل ما سجلته باسم «{{from}}» ينتقل إلى «{{into}}»: {{workouts}} و{{programDays}}. وتُعاد حساب الأرقام القياسية.",
+        "workouts_one": "{{count}} جلسة",
+        "workouts_zero": "{{count}} جلسة",
+        "workouts_two": "{{count}} جلسة",
+        "workouts_few": "{{count}} جلسات",
+        "workouts_many": "{{count}} جلسة",
+        "workouts_other": "{{count}} جلسة",
+        "programDays_one": "{{count}} يوم برنامج",
+        "programDays_zero": "{{count}} يوم برنامج",
+        "programDays_two": "{{count}} يوم برنامج",
+        "programDays_few": "{{count}} أيام برنامج",
+        "programDays_many": "{{count}} يوم برنامج",
+        "programDays_other": "{{count}} يوم برنامج",
+        "final": "لا يمكن التراجع. سيُؤرشف «{{from}}» بعدها.",
+        "confirm": "دمج",
+        "counting": "جارٍ حساب ما سينتقل…",
+        "usageFailed": "تعذر حساب ما سينتقل",
+        "failed": "تعذر دمج التمرينين",
+        "done": "دُمج «{{from}}» في هذا التمرين",
+        "combined_one": "أيام البرنامج التي تحوي الاثنين: {{count}}. سيظهر «{{into}}» مرة واحدة بجولات الاثنين.",
+        "combined_zero": "أيام البرنامج التي تحوي الاثنين: {{count}}. سيظهر «{{into}}» في كل منها مرة واحدة بجولات الاثنين.",
+        "combined_two": "أيام البرنامج التي تحوي الاثنين: {{count}}. سيظهر «{{into}}» في كل منها مرة واحدة بجولات الاثنين.",
+        "combined_few": "أيام البرنامج التي تحوي الاثنين: {{count}}. سيظهر «{{into}}» في كل منها مرة واحدة بجولات الاثنين.",
+        "combined_many": "أيام البرنامج التي تحوي الاثنين: {{count}}. سيظهر «{{into}}» في كل منها مرة واحدة بجولات الاثنين.",
+        "combined_other": "أيام البرنامج التي تحوي الاثنين: {{count}}. سيظهر «{{into}}» في كل منها مرة واحدة بجولات الاثنين."
+      },
+      "addInstructions": "إضافة تعليمات",
+      "unsupportedTitle": "هذا الخادم لا يستطيع حفظ تمارينك الخاصة",
+      "unsupportedBody": "حدّث خادم عافيتك لإنشاء تمارين مخصصة."
+    }
+  },
+  "home": {
+    "heatmap": {
+      "workouts_one": "{{date}} · {{count}} جلسة",
+      "workouts_zero": "{{date}} · {{count}} جلسة",
+      "workouts_two": "{{date}} · {{count}} جلسة",
+      "workouts_few": "{{date}} · {{count}} جلسات",
+      "workouts_many": "{{date}} · {{count}} جلسة",
+      "workouts_other": "{{date}} · {{count}} جلسة",
+      "restDay": "{{date}} · يوم راحة",
+      "less": "أقل",
+      "more": "أكثر"
+    },
+    "greeting": {
+      "morning": "صباح الخير، {{name}}",
+      "morning_anonymous": "صباح الخير",
+      "afternoon": "مساء الخير، {{name}}",
+      "afternoon_anonymous": "مساء الخير",
+      "evening": "مساء الخير، {{name}}",
+      "evening_anonymous": "مساء الخير"
+    },
+    "loadFailed": "تعذر تحميل لوحة المتابعة",
+    "header": {
+      "start": "ابدأ",
+      "resume": "متابعة"
+    },
+    "activeSession": {
+      "title": "يوجد تمرين جارٍ",
+      "tapToResume": "{{name}} — اضغط للمتابعة"
+    },
+    "upNext": {
+      "label": "التالي · {{name}}",
+      "viewRoutine": "عرض روتين {{name}}",
+      "start": "بدء {{name}}"
+    },
+    "kpi": {
+      "week": "الأسبوع",
+      "sessions": "جلسات",
+      "cals": "سعرات",
+      "caloriesFailed": "تعذر تحميل سعرات اليوم",
+      "proteinFailed": "تعذر تحميل بروتين اليوم",
+      "calories": "السعرات",
+      "protein": "البروتين"
+    },
+    "thisWeek": {
+      "title": "هذا الأسبوع",
+      "unit_one": "جلسة",
+      "unit_zero": "جلسة",
+      "unit_two": "جلسة",
+      "unit_few": "جلسات",
+      "unit_many": "جلسة",
+      "unit_other": "جلسة"
+    },
+    "volume": {
+      "title": "منحنى الحجم",
+      "empty": "سجّل تمارينك لرؤية المنحنيات",
+      "tooltip": "الحجم"
+    },
+    "consistency": {
+      "title": "الالتزام",
+      "range": "12 أسبوعاً",
+      "empty": "ابدأ التمرين لتبني سلسلتك"
+    },
+    "lastWorkout": {
+      "title": "آخر تمرين",
+      "all": "الكل",
+      "minutes": "{{mins}} د",
+      "moreExercises_one": "+{{count}} تمرين آخر",
+      "moreExercises_zero": "+{{count}} تمرين آخر",
+      "moreExercises_two": "+{{count}} تمرين آخر",
+      "moreExercises_few": "+{{count}} تمارين أخرى",
+      "moreExercises_many": "+{{count}} تمريناً آخر",
+      "moreExercises_other": "+{{count}} تمرين آخر",
+      "empty": "لم تُسجل تمارين بعد",
+      "startFirst": "ابدأ أول تمرين ←"
+    },
+    "nutrition": {
+      "title": "تغذية اليوم",
+      "log": "سجّل ←",
+      "loadFailed": "تعذر تحميل طعام اليوم"
+    },
+    "macro": {
+      "carbs": "كربوهيدرات"
+    },
+    "muscle": {
+      "title": "توازن العضلات",
+      "workouts_one": "{{count}} جلسة",
+      "workouts_zero": "{{count}} جلسة",
+      "workouts_two": "{{count}} جلسة",
+      "workouts_few": "{{count}} جلسات",
+      "workouts_many": "{{count}} جلسة",
+      "workouts_other": "{{count}} جلسة",
+      "empty": "سجّل تمارينك لترى أكثر العضلات تدريباً.",
+      "noData": "لا بيانات تمارين بعد",
+      "top": "الأكثر",
+      "tooltip_one": "{{count}} جولة ({{percent}}%)",
+      "tooltip_zero": "{{count}} جولة ({{percent}}%)",
+      "tooltip_two": "{{count}} جولة ({{percent}}%)",
+      "tooltip_few": "{{count}} جولات ({{percent}}%)",
+      "tooltip_many": "{{count}} جولة ({{percent}}%)",
+      "tooltip_other": "{{count}} جولة ({{percent}}%)",
+      "donutSets": "جولات"
+    },
+    "weight": {
+      "title": "الوزن",
+      "view": "عرض",
+      "loadFailed": "تعذر تحميل وزنك",
+      "logFirst": "سجّل أول وزن",
+      "logFirstHint": "اضغط لبدء المتابعة",
+      "logAria": "تسجيل الوزن",
+      "noChange7d": "7 أيام · بلا تغيير",
+      "trendDown": "7 أيام · ↓{{amount}} {{unit}}",
+      "trendUp": "7 أيام · ↑{{amount}} {{unit}}"
+    },
+    "muscleRoast": {
+      "chest": "كله صدر وبلا أرجل. كلاسيكية.",
+      "back": "ظهر مثل الثلاجة. احترامنا.",
+      "shoulders": "ما تدخل من الباب. ممتاز.",
+      "biceps": "صور المراية قيد التحميل…",
+      "triceps": "حدوة الحصان. مصافحتك أكيد مخيفة.",
+      "legs": "تتمرن أرجل فعلاً. أنت عملة نادرة.",
+      "quadriceps": "فخذ أمامي بلا نهاية. الجينز ما إله حظ.",
+      "hamstrings": "محارب السلسلة الخلفية. وحش الديدلفت قادم.",
+      "glutes": "التزام بالأرداف. نحترم الإصرار.",
+      "calves": "ملك بطة الساق. أندر الرياضيين.",
+      "core": "جاهز للبحر 365 يوماً بالسنة.",
+      "abs": "السكس باك قادم. أو وصل. بالحالتين ممتاز.",
+      "forearms": "باباي اتصل. يريد ساعديه.",
+      "traps": "بلا رقبة، بلا مشكلة.",
+      "lats": "تمشي مثل الكوبرا. الأجنحة مفتوحة.",
+      "full-body": "رياضي شامل. أو سويت بيربي وبس.",
+      "fallback": "نمط تدريب غامض. نحترمه."
+    },
+    "quip": {
+      "barDoesNotCare": "البار ما يهتم بشعورك تجاهه.",
+      "progressiveOverload": "زيادة الحمل التدريجية: الهرم الوحيد اللي ينجح.",
+      "warmUp": "ما أحد ندم على الإحماء.",
+      "couch": "أصعب تكرار هو اللي يقومك من القنفة.",
+      "formFirst": "الأداء الصحيح أولاً. رفعات الغرور خليها برة.",
+      "legs": "تمرين الأرجل مو اختياري، بس مو محبوب.",
+      "chalk": "الطباشير مو شخصية. بس يفيد.",
+      "unfilledLog": "ما تكدر تتفوق على سجل ما تملاه.",
+      "deload": "أسابيع التخفيف تنحسب. غصباً عنا.",
+      "mirror": "المراية بعدين. هسه البار.",
+      "halfReps": "نص تكرار، كذبة كاملة.",
+      "badSet": "الجولة السيئة الوحيدة هي اللي أقنعت نفسك تتركها.",
+      "squatRack": "أكو جهاز سكوات شايل جاكيت أحد. مو جاكيتك.",
+      "showingUp": "الحضور هو الجزء اللي أغلب الناس يطوفوه.",
+      "proteinSleep": "البروتين مو اختياري. والنوم هم.",
+      "rest": "الراحة جزء من الخطة، مو فراغ بيها."
+    },
+    "quickWeighIn": {
+      "title": "تسجيل الوزن",
+      "duplicateToday": "سُجل وزن اليوم مسبقاً ({{weight}} {{unit}}). تسجيله مرة أخرى؟",
+      "weight": "الوزن",
+      "changeDateOrNote": "+ تغيير التاريخ أو إضافة ملاحظة",
+      "date": "التاريخ",
+      "note": "ملاحظة"
+    }
+  },
+  "nav": {
+    "home": "الرئيسية",
+    "workouts": "التمارين",
+    "programs": "البرامج",
+    "food": "الطعام",
+    "nutrition": "التغذية",
+    "weight": "الوزن",
+    "primary": "الرئيسي",
+    "skipToContent": "الانتقال إلى المحتوى",
+    "userMenuNamed": "{{name}}، قائمة المستخدم",
+    "userMenu": "قائمة المستخدم",
+    "settings": "الإعدادات",
+    "lightMode": "الوضع الفاتح",
+    "darkMode": "الوضع الداكن",
+    "signOut": "تسجيل الخروج",
+    "session": {
+      "rest": "راحة"
+    }
+  },
+  "app": {
+    "documentTitle": "عافيتك — متتبع التمارين والتغذية",
+    "pageTitle": "{{page}} · عافيتك"
+  }
+}

@@ -1,0 +1,916 @@
+package stores
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/Cawlumm/lyftr-backend/models"
+	"github.com/Cawlumm/lyftr-backend/oedb"
+	"github.com/Cawlumm/lyftr-backend/utils"
+)
+
+// ExerciseStore owns all SQL for the (global, read-only) exercises catalog: the
+// local cache of oedb rows, the scheduled sync that fills it, and the admin
+// sync endpoint.
+type ExerciseStore struct {
+	db      *sql.DB
+	photos  *PhotoFiles
+	catalog *oedb.Client
+	// snapshot, when set, is read before the API at the start of a catalog pass.
+	snapshot *oedb.Snapshot
+	// syncing is held for the length of a catalog pass, so the daily timer and the
+	// admin endpoint can never run two imports against the one SQLite connection.
+	syncing atomic.Bool
+	// status is how recent passes went. syncing above stays the one running flag.
+	statusMu sync.Mutex
+	status   models.ExerciseCacheStatus
+	// searchDownUntil (unix nanos, 0 = up) is when Search may next ask the catalog. See
+	// searchAllowed.
+	searchDownUntil atomic.Int64
+	// searchTimeout bounds one live search call. A healthy catalog answers in well under
+	// a second; a picker that hangs is worse than one that falls back.
+	searchTimeout time.Duration
+}
+
+func NewExerciseStore(db *sql.DB) *ExerciseStore {
+	return &ExerciseStore{db: db, searchTimeout: defaultSearchTimeout}
+}
+
+// ExerciseFilter holds the optional list filters (empty string = no filter).
+type ExerciseFilter struct {
+	Query, MuscleGroup, Category, Equipment string
+	// Locale is the reader's language. Empty and malformed values mean English.
+	Locale string
+	Limit  int
+	// Page is 1-based; zero and one both mean the first page. Paging is what lets
+	// the pickers stop downloading the catalog to filter it in the browser.
+	Page int
+	// UserID is the caller. Mine narrows the list to their own non-archived custom
+	// exercises; without it a list is the catalog alone.
+	UserID int64
+	Mine   bool
+}
+
+// offset converts the 1-based page into a SQL offset.
+func (f ExerciseFilter) offset() int {
+	if f.Page < 2 {
+		return 0
+	}
+	return (f.Page - 1) * f.Limit
+}
+
+const defaultLocale = "en"
+
+// NormalizeLocale is the one spelling of a locale: language lowercase, everything
+// after the first '-' uppercase, as oedb's normalizeLocale writes it, because the
+// rows stored here carry oedb's spelling. Empty or malformed input is English, the
+// documented meaning of "no usable locale" rather than an error.
+func NormalizeLocale(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) > 35 {
+		return defaultLocale
+	}
+	subtags := strings.Split(raw, "-")
+	for i, tag := range subtags {
+		if tag == "" {
+			return defaultLocale
+		}
+		for j := 0; j < len(tag); j++ {
+			c := tag[j]
+			isLetter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+			if !isLetter && (i == 0 || c < '0' || c > '9') {
+				return defaultLocale
+			}
+		}
+	}
+	if n := len(subtags[0]); n < 2 || n > 8 {
+		return defaultLocale
+	}
+	subtags[0] = strings.ToLower(subtags[0])
+	for i := 1; i < len(subtags); i++ {
+		subtags[i] = strings.ToUpper(subtags[i])
+	}
+	return strings.Join(subtags, "-")
+}
+
+// BaseLanguage is the language subtag of a normalized locale: es for es-MX.
+func BaseLanguage(locale string) string {
+	if i := strings.IndexByte(locale, '-'); i > 0 {
+		return locale[:i]
+	}
+	return locale
+}
+
+// Which text an exercise shows is decided here and nowhere else: the reader's
+// locale, then its base language, then the English base row, field by field. Every
+// read that returns exercise text joins through translationJoin and selects
+// localizedName / localizedDescription / localizedInstructions.
+const (
+	localizedName        = `COALESCE(NULLIF(tr.name, ''), e.name)`
+	localizedDescription = `COALESCE(NULLIF(tr.description, ''), e.description)`
+	// The translated list wins only when the translation has steps; '[]' is its "not served".
+	localizedInstructions = `COALESCE(NULLIF(tr.instructions, '[]'), e.instructions)`
+)
+
+// translationJoin returns a LEFT JOIN, aliased tr, onto the single best translation
+// row for each exercise e. English reads join nothing: the base row is English.
+func translationJoin(locale string) (string, []any) {
+	l := NormalizeLocale(locale)
+	if l == defaultLocale {
+		return ` LEFT JOIN exercise_translations tr ON 1 = 0`, nil
+	}
+	return ` LEFT JOIN exercise_translations tr ON tr.id = (
+		SELECT t.id FROM exercise_translations t
+		WHERE t.exercise_id = e.id AND t.locale IN (?, ?)
+		ORDER BY t.locale = ? DESC LIMIT 1)`, []any{l, BaseLanguage(l), l}
+}
+
+func exerciseSelect(locale string) (string, []any) {
+	join, args := translationJoin(locale)
+	return `SELECT e.id, ` + localizedName + `, e.muscle_group, e.secondary_muscles, e.category, e.equipment, ` +
+		localizedDescription + `, ` + localizedInstructions + `, e.image_url, e.owner_user_id IS NOT NULL, e.archived_at IS NOT NULL, e.merged_into_id, COALESCE(e.photo_id, '') FROM exercises e` + join, args
+}
+
+type scanner interface{ Scan(dest ...any) error }
+
+func scanExercise(row scanner, e *models.Exercise) error {
+	var secondaryRaw, instructionsRaw string
+	var merged sql.NullInt64
+	if err := row.Scan(&e.ID, &e.Name, &e.MuscleGroup, &secondaryRaw, &e.Category, &e.Equipment, &e.Description, &instructionsRaw, &e.ImageURL,
+		&e.IsCustom, &e.Archived, &merged, &e.PhotoID); err != nil {
+		return err
+	}
+	if merged.Valid {
+		e.MergedIntoID = &merged.Int64
+	}
+	json.Unmarshal([]byte(secondaryRaw), &e.SecondaryMuscles)
+	if e.SecondaryMuscles == nil {
+		e.SecondaryMuscles = []string{}
+	}
+	json.Unmarshal([]byte(instructionsRaw), &e.Instructions)
+	if e.Instructions == nil {
+		e.Instructions = []string{}
+	}
+	return nil
+}
+
+func (s *ExerciseStore) List(f ExerciseFilter) ([]models.Exercise, error) {
+	locale := NormalizeLocale(f.Locale)
+	sel, args := exerciseSelect(locale)
+	q := sel + ` WHERE e.upstream_missing_at IS NULL`
+	if f.Mine {
+		q += " AND e.owner_user_id = ? AND e.archived_at IS NULL"
+		args = append(args, f.UserID)
+	} else {
+		q += " AND e.owner_user_id IS NULL"
+	}
+	if f.Query != "" {
+		like := "%" + f.Query + "%"
+		q += " AND (e.name LIKE ? OR EXISTS (SELECT 1 FROM exercise_translations t WHERE t.exercise_id = e.id AND t.locale IN (?, ?) AND t.name LIKE ?))"
+		args = append(args, like, locale, BaseLanguage(locale), like)
+	}
+	if f.MuscleGroup != "" {
+		q += " AND e.muscle_group = ?"
+		args = append(args, f.MuscleGroup)
+	}
+	if f.Category != "" {
+		q += " AND e.category = ?"
+		args = append(args, f.Category)
+	}
+	if f.Equipment != "" {
+		q += " AND e.equipment = ?"
+		args = append(args, f.Equipment)
+	}
+	q += " ORDER BY " + localizedName + " LIMIT ? OFFSET ?"
+	args = append(args, f.Limit, f.offset())
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	exercises := []models.Exercise{}
+	for rows.Next() {
+		var e models.Exercise
+		if err := scanExercise(rows, &e); err != nil {
+			return nil, err
+		}
+		exercises = append(exercises, e)
+	}
+	return exercises, rows.Err()
+}
+
+// Get returns one exercise, or sql.ErrNoRows if not found or if it is another user's
+// custom exercise.
+func (s *ExerciseStore) Get(id int64, locale string, userID int64) (models.Exercise, error) {
+	var e models.Exercise
+	sel, args := exerciseSelect(locale)
+	if err := scanExercise(s.db.QueryRow(sel+` WHERE e.id = ? AND (e.owner_user_id IS NULL OR e.owner_user_id = ?)`, append(args, id, userID)...), &e); err != nil {
+		return models.Exercise{}, err
+	}
+	return e, nil
+}
+
+func (s *ExerciseStore) Count() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM exercises WHERE owner_user_id IS NULL`).Scan(&n)
+	return n, err
+}
+
+// Materialize records upstream catalog rows in the local exercises table and
+// returns them as Lyftr exercises, each carrying its local integer id.
+//
+// This is what lets Lyftr query oedb live while keeping referential integrity.
+// workout_exercises and program_exercises FK into exercises(id) with no cascade,
+// so an exercise a user can see in the picker must already exist locally by the
+// time they add it to a workout — otherwise the insert fails, or worse, succeeds
+// against an id that means something else. Materializing on read closes that gap
+// without a second round trip when the user picks.
+//
+// Rows are matched by oedb_id first and name second. The order matters: name is
+// the only key legacy rows have (they predate oedb entirely and were seeded from
+// free-exercise-db), while oedb_id is the only key that survives an upstream
+// rename. Trying oedb_id first means a renamed exercise updates the row it
+// already owns instead of inserting a duplicate under the new name.
+//
+// The base row is English and stays English. Each field oedb served in English
+// goes into it; each field served in another language goes into that locale's
+// exercise_translations row instead, so one user's Spanish search never rewrites
+// what an English reader sees. locale is the language that was asked for, and the
+// language the returned rows are shown in.
+//
+// Name matching only adopts a row that no upstream id owns yet, or whose upstream
+// exercise has since been removed (wger's replaced_by: the history follows the
+// exercise that replaced it). An upstream
+// exercise whose name is already owned by another id, or that arrives translated
+// with no English row to attach to, is skipped and left out of the result, because oedb names are not unique and re-pointing the row would re-point
+// every workout that references it.
+func (s *ExerciseStore) Materialize(items []oedb.Exercise, imageBase, locale string) ([]models.Exercise, error) {
+	if len(items) == 0 {
+		return []models.Exercise{}, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	locale = NormalizeLocale(locale)
+	sel, selArgs := exerciseSelect(locale)
+
+	byOedbID, err := tx.Prepare(`
+		UPDATE exercises SET
+		  name = COALESCE(?, name), muscle_group = ?, secondary_muscles = ?, category = ?,
+		  equipment = ?, description = COALESCE(?, description), instructions = COALESCE(?, instructions),
+		  image_url = ?, slug = ?,
+		  upstream_missing_at = NULL
+		WHERE oedb_id = ?`)
+	if err != nil {
+		return nil, err
+	}
+	defer byOedbID.Close()
+
+	byName, err := tx.Prepare(`
+		INSERT INTO exercises (name, muscle_group, secondary_muscles, category, equipment, description, instructions, image_url, oedb_id, slug)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) WHERE owner_user_id IS NULL DO UPDATE SET
+		  muscle_group      = excluded.muscle_group,
+		  secondary_muscles = excluded.secondary_muscles,
+		  category          = excluded.category,
+		  equipment         = excluded.equipment,
+		  description       = COALESCE(?, description),
+		  instructions      = COALESCE(?, instructions),
+		  image_url         = excluded.image_url,
+		  oedb_id           = excluded.oedb_id,
+		  slug              = excluded.slug,
+		  upstream_missing_at = NULL
+		WHERE exercises.oedb_id IS NULL OR exercises.upstream_missing_at IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer byName.Close()
+
+	out := make([]models.Exercise, 0, len(items))
+	for _, it := range items {
+		secondary := it.SecondaryMuscles
+		if secondary == nil {
+			secondary = []string{}
+		}
+		secondaryJSON, err := json.Marshal(secondary)
+		if err != nil {
+			return nil, err
+		}
+
+		name, desc := it.Name(), it.Description()
+		nameEN := servedInEnglish(it.Translation.NameLocale)
+		descEN := servedInEnglish(it.Translation.InstructionsLocale)
+		// nil leaves the base column alone: a field served in another language is
+		// not the English text this column holds.
+		stepsJSON, err := json.Marshal(it.Steps())
+		if err != nil {
+			return nil, err
+		}
+		var nameEnglish, descEnglish, stepsEnglish any
+		if nameEN {
+			nameEnglish = name
+		}
+		if descEN {
+			descEnglish = desc
+			stepsEnglish = string(stepsJSON)
+		}
+
+		args := []any{
+			nameEnglish, it.MuscleGroup, string(secondaryJSON), it.Category,
+			it.Equipment, descEnglish, stepsEnglish, it.ImageURL(imageBase), it.Slug, it.ID,
+		}
+		res, err := byOedbID.Exec(args...)
+		if utils.IsUniqueViolation(err) {
+			// Moving the name would mean merging two rows that workouts point at.
+			holderID, holderOedb, herr := nameHolder(tx, name)
+			if herr != nil {
+				return nil, herr
+			}
+			log.Printf("exercises: upstream %s renamed to %q, already held by local exercise %d (oedb_id %q); keeping its current name", it.ID, name, holderID, holderOedb)
+			args[0] = nil
+			res, err = byOedbID.Exec(args...)
+		}
+		if err != nil {
+			return nil, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			if !nameEN {
+				// No English row to hang the translation on, and none to invent: either
+				// the English read skipped this exercise (its name is held by another
+				// id) or oedb did not return it. Leave it out; the rest of the batch stands.
+				log.Printf("exercises: skipping upstream %s: no English base row for its %q translation", it.ID, locale)
+				continue
+			}
+			baseDesc, baseSteps := "", "[]"
+			if descEN {
+				baseDesc, baseSteps = desc, string(stepsJSON)
+			}
+			nameRes, err := byName.Exec(
+				name, it.MuscleGroup, string(secondaryJSON), it.Category,
+				it.Equipment, baseDesc, baseSteps, it.ImageURL(imageBase), it.ID, it.Slug,
+				descEnglish, stepsEnglish,
+			)
+			if err != nil {
+				return nil, err
+			}
+			adopted, err := nameRes.RowsAffected()
+			if err != nil {
+				return nil, err
+			}
+			if adopted == 0 {
+				holderID, holderOedb, herr := nameHolder(tx, name)
+				if herr != nil {
+					return nil, herr
+				}
+				log.Printf("exercises: skipping upstream %s %q: name already held by local exercise %d (oedb_id %q)", it.ID, name, holderID, holderOedb)
+				continue
+			}
+		}
+
+		if locale != defaultLocale {
+			if err := replaceTranslation(tx, it, locale, nameEN, descEN); err != nil {
+				return nil, err
+			}
+		}
+
+		var e models.Exercise
+		row := tx.QueryRow(sel+` WHERE e.oedb_id = ?`, append(append([]any{}, selArgs...), it.ID)...)
+		if err := scanExercise(row, &e); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// nameHolder reports which local row holds name, for the log line when an upstream exercise cannot take it.
+func nameHolder(tx *sql.Tx, name string) (id int64, oedbID string, err error) {
+	err = tx.QueryRow(`SELECT id, COALESCE(oedb_id, '') FROM exercises WHERE name = ? AND owner_user_id IS NULL`, name).Scan(&id, &oedbID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", nil
+	}
+	return
+}
+
+// servedInEnglish reports whether a field oedb served is the English text. An empty
+// locale is an oedb that predates name_locale, which only ever served English.
+func servedInEnglish(served string) bool { return NormalizeLocale(served) == defaultLocale }
+
+// replaceTranslation records what oedb served for the requested locale. It drops
+// the rows for the requested locale and its base language first, so a translation
+// upstream has since dropped (a new revision does that) stops being shown, then
+// writes one row if any field really was served in another language. A field that
+// fell back to English is stored empty so the read falls through to the base row.
+func replaceTranslation(tx *sql.Tx, it oedb.Exercise, locale string, nameEN, descEN bool) error {
+	var exerciseID int64
+	if err := tx.QueryRow(`SELECT id FROM exercises WHERE oedb_id = ?`, it.ID).Scan(&exerciseID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM exercise_translations WHERE exercise_id = ? AND locale IN (?, ?)`,
+		exerciseID, locale, BaseLanguage(locale),
+	); err != nil {
+		return err
+	}
+	if nameEN && descEN {
+		return nil
+	}
+
+	served, name, desc, steps, origin := NormalizeLocale(it.Translation.NameLocale), "", "", "[]", "human"
+	if nameEN {
+		served = NormalizeLocale(it.Translation.InstructionsLocale)
+	} else {
+		name = it.Name()
+		if it.Translation.NameMachineOrigin {
+			origin = "machine"
+		}
+	}
+	if !descEN {
+		desc = it.Description()
+		raw, err := json.Marshal(it.Steps())
+		if err != nil {
+			return err
+		}
+		steps = string(raw)
+		if it.Translation.InstructionsMachineOrigin {
+			origin = "machine"
+		}
+	}
+	_, err := tx.Exec(
+		`INSERT INTO exercise_translations (exercise_id, locale, name, description, instructions, origin)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(exercise_id, locale) DO UPDATE SET
+		   name = excluded.name, description = excluded.description,
+		   instructions = excluded.instructions, origin = excluded.origin`,
+		exerciseID, served, name, desc, steps, origin,
+	)
+	return err
+}
+
+// UseCatalog points this store at an upstream open-exercise-db instance.
+//
+// Optional by design: with no catalog the store answers from the local table
+// alone, which is both the pre-oedb behaviour and the behaviour every test
+// exercises. Nothing in Lyftr requires the network to work.
+func (s *ExerciseStore) UseCatalog(c *oedb.Client) { s.catalog = c }
+
+// UseSnapshot makes the catalog pass read the bulk catalog from static snapshots first,
+// falling back to the API (UseCatalog) only when none of them validates. Image URLs still
+// resolve against the API's origin.
+func (s *ExerciseStore) UseSnapshot(sn *oedb.Snapshot) { s.snapshot = sn }
+
+const (
+	defaultSearchTimeout = 3 * time.Second
+	// searchBackoff is how long Search stops asking a catalog that did not answer, so
+	// one dead upstream costs one slow request, not one per keystroke.
+	searchBackoff = time.Minute
+)
+
+// searchAllowed reports whether this search may call the catalog. After a failed call
+// the answer is no until searchBackoff has passed. The first caller after that claims
+// the retry, holding the rest off for as long as its own call can take, so a catalog
+// that is still down is probed once, not by every request that arrives meanwhile.
+func (s *ExerciseStore) searchAllowed() bool {
+	until := s.searchDownUntil.Load()
+	if until == 0 {
+		return true
+	}
+	now := time.Now()
+	if now.UnixNano() < until {
+		return false
+	}
+	return s.searchDownUntil.CompareAndSwap(until, now.Add(s.searchTimeout+time.Second).UnixNano())
+}
+
+// searchFailed backs Search off the catalog when it gave no answer: a timeout or a
+// connection that never completed. An answer that says no (a 4xx for one bad query,
+// a 5xx) arrives fast, costs nothing to repeat and says nothing about the next query,
+// and a caller that gave up on its own request says nothing about the catalog.
+func (s *ExerciseStore) searchFailed(ctx context.Context, err error) {
+	var netErr net.Error
+	if ctx.Err() != nil || !(errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr)) {
+		s.searchDownUntil.Store(0)
+		return
+	}
+	s.searchDownUntil.Store(time.Now().Add(searchBackoff).UnixNano())
+	log.Printf("exercises: catalog is not answering, serving the local copy for %s: %v", searchBackoff, err)
+}
+
+// Search answers an exercise query from the upstream catalog, recording what it
+// returns locally, and falls back to the local table when the catalog cannot be
+// reached. A catalog that does not answer is left alone for searchBackoff, so the
+// fallback is immediate rather than a timeout on every request.
+//
+// The fallback is not a nicety. oedb being down, slow, or rate-limiting must
+// never stop someone logging a workout, and the local table already holds every
+// exercise this instance has shown before — which, for an established install,
+// is most of the ones its users search for.
+func (s *ExerciseStore) Search(ctx context.Context, f ExerciseFilter) ([]models.Exercise, error) {
+	if f.Mine {
+		return s.List(f)
+	}
+	if s.catalog == nil {
+		return s.List(f)
+	}
+
+	if !s.searchAllowed() {
+		return s.List(f)
+	}
+
+	items, err := s.fetchCatalog(ctx, f)
+	if err != nil {
+		s.searchFailed(ctx, err)
+		log.Printf("exercises: catalog query failed, serving local snapshot: %v", err)
+		return s.List(f)
+	}
+
+	if err := s.ensureEnglishBase(ctx, items); err != nil {
+		s.searchFailed(ctx, err)
+		log.Printf("exercises: could not fetch English base rows, serving local snapshot: %v", err)
+		return s.List(f)
+	}
+	s.searchDownUntil.Store(0)
+
+	out, err := s.Materialize(items, s.catalog.BaseURL(), f.Locale)
+	if err != nil {
+		log.Printf("exercises: could not record catalog results, serving local snapshot: %v", err)
+		return s.List(f)
+	}
+	return out, nil
+}
+
+// ensureEnglishBase records the English row of any exercise that arrived with a
+// translated name and is not held locally yet. Materialize refuses to invent an
+// English base from translated text, so this has to happen first: the exercises are
+// re-read by id with no locale, which is the only way to learn their English name.
+func (s *ExerciseStore) ensureEnglishBase(ctx context.Context, items []oedb.Exercise) error {
+	var missing []string
+	for _, it := range items {
+		if servedInEnglish(it.Translation.NameLocale) {
+			continue
+		}
+		var held int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM exercises WHERE oedb_id = ?`, it.ID).Scan(&held)
+		if err != nil {
+			return err
+		}
+		if held == 0 {
+			missing = append(missing, it.ID)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.searchTimeout)
+	defer cancel()
+	for len(missing) > 0 {
+		batch := missing[:min(len(missing), 100)]
+		missing = missing[len(batch):]
+		res, err := s.catalog.List(ctx, oedb.ListParams{IDs: batch, PerPage: len(batch)})
+		if err != nil {
+			return err
+		}
+		wanted := make(map[string]bool, len(batch))
+		for _, id := range batch {
+			wanted[id] = true
+		}
+		english := res.Exercises[:0]
+		for _, it := range res.Exercises {
+			if wanted[it.ID] {
+				english = append(english, it)
+			}
+		}
+		if _, err := s.Materialize(english, s.catalog.BaseURL(), defaultLocale); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fetchCatalog picks between the paged endpoint and the bulk export.
+//
+// The picker asks for the whole catalog (limit=1000) to build its client-side
+// cache, and oedb rejects per_page above 100 outright rather than clamping it.
+// Rather than issue nine paged requests for that case, an unfiltered bulk read
+// goes to the export endpoint, which returns everything at once. Anything
+// filtered stays on List, where the filter is what keeps the response small.
+func (s *ExerciseStore) fetchCatalog(ctx context.Context, f ExerciseFilter) ([]oedb.Exercise, error) {
+	filtered := f.Query != "" || f.MuscleGroup != "" || f.Category != "" || f.Equipment != ""
+	// The export takes no locale, so only an English read may use it. English is
+	// sent as "" so its upstream URLs, and cache entries, are the same as before.
+	locale := NormalizeLocale(f.Locale)
+	if locale == defaultLocale {
+		locale = ""
+	}
+	if !filtered && f.Limit > 100 && f.Page < 2 && locale == "" {
+		// The export is ~300 KB and measured around 14s against the hosted
+		// instance, so it gets a deadline sized for that. It is also cached
+		// upstream-style for 900s, so only the first caller after a cold start
+		// waits at all.
+		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		return s.catalog.Export(ctx)
+	}
+
+	// An interactive search gets a short deadline: a picker that hangs is worse
+	// than one that falls back to the local snapshot immediately.
+	ctx, cancel := context.WithTimeout(ctx, s.searchTimeout)
+	defer cancel()
+
+	// A filtered request for more than one page walks the pages. oedb caps
+	// per_page at 100, so without this a caller asking for 1000 dumbbell
+	// exercises would silently receive the first 100 and no indication that more
+	// existed — which is what the local table used to answer in full.
+	first := f.Page
+	if first < 1 {
+		first = 1
+	}
+	var out []oedb.Exercise
+	for page := first; ; page++ {
+		res, err := s.catalog.List(ctx, oedb.ListParams{
+			Query:       f.Query,
+			MuscleGroup: f.MuscleGroup,
+			Category:    f.Category,
+			Equipment:   f.Equipment,
+			Locale:      locale,
+			Page:        page,
+			PerPage:     f.Limit - len(out),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, res.Exercises...)
+		if len(out) >= f.Limit || len(res.Exercises) == 0 {
+			return out, nil
+		}
+		// res.Total counts the whole result set, not the remainder, so it only
+		// terminates the walk once this page's offset has consumed it.
+		if (page-first+1)*len(res.Exercises) >= res.Total {
+			return out, nil
+		}
+	}
+}
+
+// ErrNoCatalog is returned by the cache-management operations on an instance with
+// no upstream configured.
+var ErrNoCatalog = errors.New("This server has no exercise catalog configured.")
+
+// ErrCatalogUnreachable marks a refresh that failed reading the upstream catalog, so a
+// caller can tell an oedb outage from a local database failure.
+var ErrCatalogUnreachable = errors.New("exercise catalog unreachable")
+
+// ErrSyncRunning is returned when a catalog pass is already in progress.
+var ErrSyncRunning = errors.New("exercise sync already running")
+
+// ErrCatalogShrank marks an English export that lists under half of the visible held
+// exercises. It is indistinguishable from a truncated read, so the scheduled pass refuses it;
+// an operator who knows the removal is real accepts it with a confirmed sync.
+var ErrCatalogShrank = errors.New("exercise catalog shrank")
+
+// CacheStatus reports how many catalog rows this instance currently holds and how the
+// sync passes are going.
+//
+// After the first scheduled pass the table holds the whole catalog plus any legacy
+// rows; before it, only what reads have had reason to record. A fresh install reports
+// zero and is fully functional.
+func (s *ExerciseStore) CacheStatus() (models.ExerciseCacheStatus, error) {
+	n, err := s.Count()
+	if err != nil {
+		return models.ExerciseCacheStatus{}, err
+	}
+	// Flag first: recordPass runs before it is released, so a reader that sees it down
+	// is guaranteed to read the finished pass's outcome below.
+	syncing := s.syncing.Load()
+	s.statusMu.Lock()
+	st := s.status
+	s.statusMu.Unlock()
+	st.Count = n
+	st.Syncing = syncing
+	st.LastFailed = st.LastFailure != nil
+	return st, nil
+}
+
+// RefreshCached is the scheduled catalog pass run on demand: it imports every upstream
+// exercise in English and re-reads every held one in each other language. The int is
+// the number of exercises the English pass recorded. The pass outlives ctx: a caller that
+// gives up (a proxy timing out at 60s) must not abort a half-written import and record a
+// false "unreachable".
+func (s *ExerciseStore) RefreshCached(ctx context.Context) (int, error) {
+	return s.syncCatalog(context.WithoutCancel(ctx))
+}
+
+// RefreshCachedConfirmed is RefreshCached for an operator who has checked that the upstream
+// catalog really did lose most of its exercises: this one pass accepts a shrunken export
+// instead of failing with ErrCatalogShrank. An empty export is still refused.
+func (s *ExerciseStore) RefreshCachedConfirmed(ctx context.Context) (int, error) {
+	return s.syncCatalogWith(context.WithoutCancel(ctx), true)
+}
+
+// refresh brings one language up to date from the API. English imports every exercise in
+// the bulk export, oedb.MaxPerPage rows per transaction so a pass never holds the single
+// connection for long. Any other language re-reads every held row by id in oedb's
+// batch size, because the export is English-only and a list call is the only way to
+// ask for a translation.
+//
+// It stops at the first failed batch and reports how many rows it did apply: the
+// rows written so far are valid, and the caller decides whether a partial pass counts.
+//
+// It reads through Revalidating, because a re-read that a cache can answer re-applies
+// what this instance already holds.
+func (s *ExerciseStore) refresh(ctx context.Context, locale string, acceptShrink bool) (int, error) {
+	return s.refreshFrom(ctx, locale, acceptShrink, nil)
+}
+
+// refreshFrom is refresh over a source: a validated snapshot when snap is set, the API
+// otherwise. Both feed the same import, so the guards and the written rows cannot differ.
+func (s *ExerciseStore) refreshFrom(ctx context.Context, locale string, acceptShrink bool, snap *snapshotPass) (int, error) {
+	if s.catalog == nil {
+		return 0, ErrNoCatalog
+	}
+	cat := s.catalog.Revalidating()
+
+	if servedInEnglish(locale) {
+		var items []oedb.Exercise
+		if snap != nil {
+			items = snap.items(locale)
+		} else {
+			var err error
+			items, err = cat.Export(ctx)
+			if err != nil {
+				return 0, fmt.Errorf("%w: %w", ErrCatalogUnreachable, err)
+			}
+		}
+		return s.importEnglish(items, acceptShrink)
+	}
+
+	held, err := s.cachedOedbIDs()
+	if err != nil {
+		return 0, err
+	}
+
+	if snap != nil {
+		// A non-English file can only add translations to rows already held and visible:
+		// it never inserts a row or un-hides one the English file stopped listing.
+		var items []oedb.Exercise
+		for _, it := range snap.items(locale) {
+			if held[it.ID] {
+				items = append(items, it)
+			}
+		}
+		return s.materializeChunks(items, locale)
+	}
+
+	ids := make([]string, 0, len(held))
+	for id := range held {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	done := 0
+	for start := 0; start < len(ids); start += oedb.MaxPerPage {
+		end := min(start+oedb.MaxPerPage, len(ids))
+		res, err := cat.List(ctx, oedb.ListParams{IDs: ids[start:end], Locale: locale, PerPage: oedb.MaxPerPage})
+		if err != nil {
+			return done, fmt.Errorf("%w: %w", ErrCatalogUnreachable, err)
+		}
+		out, err := s.Materialize(res.Exercises, s.catalog.BaseURL(), locale)
+		if err != nil {
+			return done, err
+		}
+		done += len(out)
+	}
+	return done, nil
+}
+
+// importEnglish writes the complete English catalog, then hides held rows it no longer lists.
+func (s *ExerciseStore) importEnglish(items []oedb.Exercise, acceptShrink bool) (int, error) {
+	done, err := s.materializeChunks(items, defaultLocale)
+	if err != nil {
+		return done, err
+	}
+	// Only after the whole export imported: a half-read export must not hide anything.
+	if err := s.markUpstreamMissing(items, acceptShrink); err != nil {
+		return done, err
+	}
+	return done, nil
+}
+
+// materializeChunks records items oedb.MaxPerPage at a time. Image URLs resolve against the
+// API's origin, never against wherever the items were read from.
+func (s *ExerciseStore) materializeChunks(items []oedb.Exercise, locale string) (int, error) {
+	done := 0
+	for start := 0; start < len(items); start += oedb.MaxPerPage {
+		out, err := s.Materialize(items[start:min(start+oedb.MaxPerPage, len(items))], s.catalog.BaseURL(), locale)
+		if err != nil {
+			return done, err
+		}
+		done += len(out)
+	}
+	return done, nil
+}
+
+func (s *ExerciseStore) cachedOedbIDs() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT oedb_id FROM exercises WHERE oedb_id IS NOT NULL AND oedb_id != '' AND upstream_missing_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	held := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		held[id] = true
+	}
+	return held, rows.Err()
+}
+
+// markUpstreamMissing hides every held upstream row the complete English export no longer
+// lists. oedb has no deletion log, so absence from a whole export is the only signal, and
+// a truncated export looks exactly like a mass removal: when the export holds under half
+// as many exercises as the visible held rows, nothing is marked and the pass fails with
+// ErrCatalogShrank so it is retried rather than trusted, unless acceptShrink says an
+// operator confirmed the removal. An empty export is never accepted.
+// Rows are never deleted, because workout_exercises and
+// program_exercises reference them with no cascade. One statement in one transaction, so
+// the write lock is held for a single scan of the table.
+func (s *ExerciseStore) markUpstreamMissing(items []oedb.Exercise, acceptShrink bool) error {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	idsJSON, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var held int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM exercises WHERE oedb_id IS NOT NULL AND oedb_id != '' AND upstream_missing_at IS NULL`).Scan(&held); err != nil {
+		return err
+	}
+	if held > 0 && (len(ids) == 0 || (2*len(ids) < held && !acceptShrink)) {
+		log.Printf("exercises: upstream export lists %d exercises against %d held; not marking any as removed", len(ids), held)
+		if len(ids) == 0 {
+			return fmt.Errorf("%w: export is empty against %d held; marking none as removed", ErrCatalogUnreachable, held)
+		}
+		return fmt.Errorf("%w: export lists %d exercises against %d held; marking none as removed", ErrCatalogShrank, len(ids), held)
+	}
+	res, err := tx.Exec(`UPDATE exercises SET upstream_missing_at = CURRENT_TIMESTAMP
+		WHERE oedb_id IS NOT NULL AND oedb_id != '' AND upstream_missing_at IS NULL
+		  AND oedb_id NOT IN (SELECT value FROM json_each(?))`, string(idsJSON))
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("exercises: %d exercises no longer in the upstream catalog; hidden from search, kept for history", n)
+		// A cached search answer still lists them, and recording it would un-hide them
+		// until the next pass.
+		s.catalog.DropCache()
+	}
+	return nil
+}
+
+// PrimeQuery materializes whatever the catalog returns for one search term.
+//
+// This is how a caller that needs specific exercises to exist locally — demo data
+// building a routine, say — gets them, so it does not wait for the scheduled pass.
+func (s *ExerciseStore) PrimeQuery(ctx context.Context, query string) error {
+	if s.catalog == nil {
+		return ErrNoCatalog
+	}
+	_, err := s.Search(ctx, ExerciseFilter{Query: query, Limit: 25})
+	return err
+}

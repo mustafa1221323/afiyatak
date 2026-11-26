@@ -1,0 +1,93 @@
+---
+title: Troubleshooting
+description: Fixes for the most common Lyftr self-hosting issues — 502 errors, login, ports, and the exercise library.
+---
+
+The common issues, and how to fix them.
+
+## `502 Bad Gateway` after loading the page
+
+Almost always `BACKEND_ORIGIN` pointing at the wrong place. It's resolved over the **internal Docker
+network**, so it must use the backend's **service name** (`backend`), not your host or LAN IP.
+
+```
+connect() failed (111: Connection refused)
+```
+
+Pointing it at something like `192.168.1.10:3000` fails because the backend isn't published to the
+host — only exposed on the Docker network. Fix: leave it as `backend:3000`, or change **only the
+port** if you set a custom backend `PORT` (e.g. `backend:3008`). See [Configuration](../configuration/).
+
+## Login fails / tokens rejected
+
+Make sure `JWT_SECRET` is set to a strong value (32+ characters) in `.env` and that you restarted
+after changing it:
+
+```bash
+docker compose up -d
+```
+
+Changing `JWT_SECRET` invalidates existing sessions — log in again.
+
+## Port already in use
+
+If host port 80 is taken (another web server, or a reverse proxy), move Lyftr to a free port with
+`PORT=8080` in `.env`, then restart. If you're running a reverse proxy, see
+[HTTPS & Reverse Proxy](../https/).
+
+## The mobile app or another device can't connect
+
+- The app needs a reachable server URL. Use a real hostname over HTTPS
+  ([reverse proxy](../https/)) — `localhost` won't work from a phone, and plain HTTP exposes
+  your login token to everyone on the network.
+- Add that origin to `CORS_ORIGIN` (comma-separated), or use `*` to allow any (the API is
+  Bearer-token based, so there are no cookies to protect).
+
+:::note[On mobile this is usually not CORS]
+A native app sends no `Origin` header, so the backend never applies CORS to it. If the phone
+app says it can't reach the server but the same URL works in the phone's **browser**, the
+device is blocking the connection, not the server. The two common causes:
+
+- **Plain `http://`** — blocked by Android's defaults. The app opts back in, at the cost of
+  sending your login token unencrypted; prefer HTTPS. See [HTTPS & Reverse Proxy](../https/).
+- **A private or self-signed CA** — apps ignore the user-installed CA store unless they opt
+  in. The app does, but the CA still has to be installed on the device. See
+  [HTTPS & Reverse Proxy](../https/).
+
+Both need a current build, which also names the specific cause in the error message instead
+of guessing. If you get a generic message mentioning CORS, update the app first.
+:::
+
+## The screen turns off during a workout in the browser
+
+The web app keeps the screen on with the browser's Screen Wake Lock, which only exists on an
+`https://` page. Over plain HTTP the workout screen shows **The screen may turn off during your
+workout** and carries on without it. Serve Lyftr over [HTTPS](../https/); the Android app is
+unaffected.
+
+## Barcode scanner won't open in the web app
+
+It says **Camera needs HTTPS** because your instance is served over plain `http://`. No
+Lyftr setting changes this — put it behind [HTTPS](../https/) and the scanner works. Your
+own private CA is enough.
+
+Unaffected: `http://localhost` **on the server itself**, and the Android app, which uses
+the phone's camera rather than the browser's.
+
+## No exercises show up
+
+The server downloads the exercise catalog in the background on first startup. If the picker says
+**The exercise library is still loading**, it hasn't been able to reach the catalog yet. It retries
+by itself; **Settings → Exercise Library → Refresh cached** tries now, and shows why it failed.
+The server needs outbound HTTPS to the catalog copy (`OEDB_CATALOG_URLS`, `cawlumm.github.io` by
+default) or, failing that, the API host (`OEDB_BASE_URL`, the hosted instance by default). The log
+says why a copy was skipped ("catalog snapshot not used"). See [Exercise Library](../exercise-library/).
+
+```bash
+docker compose logs backend | grep -i exercises
+```
+
+## Still stuck?
+
+Open an issue on [GitHub](https://github.com/Cawlumm/lyftr/issues) or ask in the
+[Discord](https://discord.gg/hfFWsrebQA) — include your `docker compose logs` output.

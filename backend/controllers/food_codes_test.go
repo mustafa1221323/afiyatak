@@ -1,0 +1,301 @@
+package controllers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Cawlumm/lyftr-backend/db"
+	"github.com/Cawlumm/lyftr-backend/oedb"
+)
+
+// These pin the code, the status and the sentence of every error the food-database and
+// exercise-catalog paths can answer with, so a client can word each one itself.
+
+func wantCode(t *testing.T, w *httptest.ResponseRecorder, status int, code, sentence string) map[string]any {
+	t.Helper()
+	body := decodeResponse(t, w)
+	if w.Code != status || body["code"] != code || body["error"] != sentence {
+		t.Fatalf("got %d %v, want %d %s %q", w.Code, body, status, code, sentence)
+	}
+	return body
+}
+
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("dial tcp: connection refused")
+}
+
+func TestLookupBarcode_productNotFoundCode(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"failure","product":{}}`))
+	})
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/012345678901", nil)
+	setParam(c, "code", "012345678901")
+	th.LookupBarcode(c)
+
+	wantCode(t, w, http.StatusNotFound, "PRODUCT_NOT_FOUND", "No product matched that barcode.")
+}
+
+func TestLookupBarcode_invalidBarcodeCode(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	for _, code := range []string{"abc", " ", "12345"} {
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/"+code, nil)
+		setParam(c, "code", code)
+		th.LookupBarcode(c)
+		wantCode(t, w, http.StatusBadRequest, "INVALID_BARCODE", "That barcode isn't valid.")
+	}
+}
+
+func TestSearchFood_failureCodes(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	t.Run("missing term", func(t *testing.T) {
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/search", nil)
+		th.SearchFood(c)
+		wantCode(t, w, http.StatusBadRequest, "SEARCH_TERM_REQUIRED", "A search term is required.")
+	})
+
+	t.Run("upstream 5xx", func(t *testing.T) {
+		withOFFMock(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=pizza", nil)
+		th.SearchFood(c)
+		wantCode(t, w, http.StatusServiceUnavailable, "FOOD_SEARCH_UNAVAILABLE", "Food search is temporarily unavailable.")
+		if w.Header().Get("Retry-After") != "2" {
+			t.Errorf("Retry-After = %q, want 2", w.Header().Get("Retry-After"))
+		}
+	})
+
+	t.Run("unreachable", func(t *testing.T) {
+		prev := offClient
+		offClient = &http.Client{Transport: failingTransport{}, Timeout: 5 * time.Second}
+		t.Cleanup(func() { offClient = prev })
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=pizza", nil)
+		th.SearchFood(c)
+		wantCode(t, w, http.StatusServiceUnavailable, "FOOD_DATABASE_UNREACHABLE", "Couldn't reach the food database.")
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		withOFFMock(t, func(w http.ResponseWriter, r *http.Request) {})
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/search?q=pizza", nil)
+		expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		c.Request = c.Request.WithContext(expired)
+		th.SearchFood(c)
+		wantCode(t, w, http.StatusServiceUnavailable, "FOOD_DATABASE_TIMEOUT", "The food database didn't respond in time. Try again.")
+		if w.Header().Get("Retry-After") != "2" {
+			t.Errorf("Retry-After = %q, want 2", w.Header().Get("Retry-After"))
+		}
+	})
+}
+
+func TestLookupBarcode_failureCodes(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	lookup := func() *httptest.ResponseRecorder {
+		c, w := newContext(uid, http.MethodGet, "/api/v1/food/barcode/012345678901", nil)
+		setParam(c, "code", "012345678901")
+		th.LookupBarcode(c)
+		return w
+	}
+
+	t.Run("upstream 5xx", func(t *testing.T) {
+		withOFFMock(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+		wantCode(t, lookup(), http.StatusServiceUnavailable, "BARCODE_LOOKUP_UNAVAILABLE", "Barcode lookup is temporarily unavailable.")
+	})
+
+	t.Run("unreachable", func(t *testing.T) {
+		prev := offClient
+		offClient = &http.Client{Transport: failingTransport{}, Timeout: 5 * time.Second}
+		t.Cleanup(func() { offClient = prev })
+		wantCode(t, lookup(), http.StatusServiceUnavailable, "FOOD_DATABASE_UNREACHABLE", "Couldn't reach the food database.")
+	})
+}
+
+func TestLogFood_lengthLimitCodes(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	cases := []struct {
+		field, code, sentence string
+		max                   int
+	}{
+		{"name", "FOOD_NAME_TOO_LONG", "Name must be 200 characters or fewer.", 200},
+		{"brand", "FOOD_BRAND_TOO_LONG", "Brand must be 200 characters or fewer.", 200},
+		{"serving_size", "SERVING_SIZE_TOO_LONG", "Serving size must be 100 characters or fewer.", 100},
+		{"barcode", "BARCODE_TOO_LONG", "Barcode must be 50 characters or fewer.", 50},
+		{"image_url", "IMAGE_URL_TOO_LONG", "Image URL must be 500 characters or fewer.", 500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			body := map[string]any{"name": "Test", "meal": "dinner"}
+			body[tc.field] = strings.Repeat("1", tc.max+1)
+			c, w := newContext(uid, http.MethodPost, "/api/v1/food", body)
+			th.LogFood(c)
+			got := wantCode(t, w, http.StatusBadRequest, tc.code, tc.sentence)
+			if p, _ := got["params"].(map[string]any); p["max"] != float64(tc.max) {
+				t.Errorf("params = %v, want max %d", got["params"], tc.max)
+			}
+		})
+	}
+}
+
+func TestRefreshExerciseCache_withoutCatalogCode(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/admin/sync-exercises", nil)
+	th.RefreshExerciseCache(c)
+
+	wantCode(t, w, http.StatusBadRequest, "NO_EXERCISE_CATALOG", "This server has no exercise catalog configured.")
+}
+
+func refreshWithCatalog(t *testing.T, baseURL string) *httptest.ResponseRecorder {
+	t.Helper()
+	setupTestDB(t)
+	uid := createTestUser(t)
+	if _, err := db.DB.Exec("INSERT INTO exercises (name, oedb_id) VALUES ('Held', 'uuid-1')"); err != nil {
+		t.Fatal(err)
+	}
+	th.s.Exercise.UseCatalog(oedb.New(baseURL, "test"))
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/admin/sync-exercises", nil)
+	th.RefreshExerciseCache(c)
+	return w
+}
+
+func TestRefreshExerciseCache_catalogFailureCodes(t *testing.T) {
+	const sentence = "Couldn't reach the exercise catalog."
+
+	t.Run("upstream 5xx", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		w := refreshWithCatalog(t, srv.URL)
+		wantCode(t, w, http.StatusServiceUnavailable, "EXERCISE_CATALOG_UNREACHABLE", sentence)
+		if got := w.Header().Get("Retry-After"); got != "2" {
+			t.Fatalf("Retry-After = %q, want 2", got)
+		}
+	})
+
+	t.Run("unreachable", func(t *testing.T) {
+		w := refreshWithCatalog(t, "http://127.0.0.1:1")
+		wantCode(t, w, http.StatusServiceUnavailable, "EXERCISE_CATALOG_UNREACHABLE", sentence)
+	})
+
+	t.Run("malformed body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("{not json"))
+		}))
+		defer srv.Close()
+		w := refreshWithCatalog(t, srv.URL)
+		wantCode(t, w, http.StatusServiceUnavailable, "EXERCISE_CATALOG_UNREACHABLE", sentence)
+	})
+}
+
+func TestRefreshExerciseCache_shrunkenCatalogNeedsConfirmation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "locales") {
+			_, _ = w.Write([]byte(`{"locales":[],"total":0}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"exercises":[{"id":"uuid-1","slug":"held","muscle_group":"chest","translation":{"name":"Held","instructions":[]}}],"total":1}`))
+	}))
+	defer srv.Close()
+
+	setupTestDB(t)
+	uid := createTestUser(t)
+	for i := 1; i <= 4; i++ {
+		if _, err := db.DB.Exec("INSERT INTO exercises (name, oedb_id) VALUES (?, ?)", fmt.Sprintf("Held %d", i), fmt.Sprintf("uuid-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	th.s.Exercise.UseCatalog(oedb.New(srv.URL, "test"))
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/admin/sync-exercises", nil)
+	th.RefreshExerciseCache(c)
+	wantCode(t, w, http.StatusConflict, "EXERCISE_CATALOG_SHRANK", "The exercise catalog lists far fewer exercises than this server holds, so none were removed. If that is right, a server operator can confirm it with confirm_removals=true.")
+
+	c, w = newContext(uid, http.MethodPost, "/api/v1/admin/sync-exercises?confirm_removals=true", nil)
+	th.RefreshExerciseCache(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirmed: got %d %s, want 200", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshExerciseCache_success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"exercises":[{"id":"uuid-1","slug":"held","muscle_group":"chest","translation":{"name":"Held Renamed","instructions":[]}},{"id":"uuid-2","slug":"new","muscle_group":"back","translation":{"name":"New One","instructions":[]}}],"total":2}`))
+	}))
+	defer srv.Close()
+	w := refreshWithCatalog(t, srv.URL)
+
+	body := decodeResponse(t, w)
+	data, _ := body["data"].(map[string]any)
+	if w.Code != http.StatusOK || data["refreshed"] != float64(2) || body["code"] != nil {
+		t.Fatalf("got %d %v, want 200 refreshed 2", w.Code, body)
+	}
+}
+
+// A second sync while one is running must be refused, not run alongside it: the
+// route is open to every signed-in user and a pass is a full catalog import.
+func TestRefreshExerciseCache_secondCallWhileRunningIs409(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "locales") {
+			_, _ = w.Write([]byte(`{"locales":[],"total":0}`))
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		_, _ = w.Write([]byte(`{"exercises":[],"total":0}`))
+	}))
+	defer srv.Close()
+
+	setupTestDB(t)
+	uid := createTestUser(t)
+	th.s.Exercise.UseCatalog(oedb.New(srv.URL, "test"))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, _ := newContext(uid, http.MethodPost, "/api/v1/admin/sync-exercises", nil)
+		th.RefreshExerciseCache(c)
+	}()
+	<-started
+
+	second := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		c, w := newContext(uid, http.MethodPost, "/api/v1/admin/sync-exercises", nil)
+		th.RefreshExerciseCache(c)
+		second <- w
+	}()
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-second:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the second sync blocked instead of being refused")
+	}
+	wantCode(t, w, http.StatusConflict, "EXERCISE_SYNC_RUNNING", "An exercise sync is already running. Try again when it finishes.")
+
+	close(release)
+	<-done
+}

@@ -1,0 +1,102 @@
+package middleware
+
+import (
+	"database/sql"
+	"errors"
+	"strings"
+
+	"github.com/Cawlumm/lyftr-backend/utils"
+	"github.com/gin-gonic/gin"
+)
+
+// TokenVersions is what Auth needs from the user store: the account's current token
+// generation, or sql.ErrNoRows when the account is gone.
+type TokenVersions interface {
+	TokenVersion(uid int64) (int, error)
+}
+
+const UserIDKey = "user_id"
+const UserEmailKey = "user_email"
+
+// Auth accepts a request only if its access token is genuine and still stands: the account
+// exists and the token was minted against the account's current token version. A signature
+// alone proves we issued the token, not that the credentials behind it survive, so without
+// the lookup a deleted account or a session ended by a password or email change kept working
+// until its token expired — reads came back empty and writes failed with a server error.
+//
+// One primary-key read per request, measured at about 10µs on the production pool. A
+// mismatch answers 401, which the clients already read as "try a refresh"; the refresh
+// then fails the same check and signs the device out cleanly.
+func Auth(versions TokenVersions) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		if !strings.HasPrefix(header, "Bearer ") {
+			utils.Fail(c, utils.CodeSignInRequired, nil)
+			c.Abort()
+			return
+		}
+
+		claims, err := utils.ValidateToken(strings.TrimPrefix(header, "Bearer "))
+		if err != nil {
+			utils.Fail(c, utils.CodeSessionInvalid, nil)
+			c.Abort()
+			return
+		}
+
+		if claims.Type != "access" {
+			utils.Fail(c, utils.CodeWrongTokenType, nil)
+			c.Abort()
+			return
+		}
+
+		current, err := versions.TokenVersion(claims.UserID)
+		if errors.Is(err, sql.ErrNoRows) {
+			utils.Fail(c, utils.CodeSessionInvalid, nil)
+			c.Abort()
+			return
+		}
+		if utils.DBError(c, err) {
+			c.Abort()
+			return
+		}
+		if utils.NormalizeTokenVersion(claims.TokenVersion) != current {
+			utils.Fail(c, utils.CodeSessionExpired, nil)
+			c.Abort()
+			return
+		}
+
+		c.Set(UserIDKey, claims.UserID)
+		c.Set(UserEmailKey, claims.Email)
+		c.Next()
+	}
+}
+
+// Admins answers whether an account holds the admin role.
+type Admins interface {
+	IsAdmin(uid int64) (bool, error)
+}
+
+// AdminOnly goes after Auth and answers 403 to anyone who is signed in but not an admin.
+// The role is read from the database on every call rather than carried in the token, so
+// revoking it takes effect at once.
+func AdminOnly(admins Admins) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ok, err := admins.IsAdmin(UserID(c))
+		if utils.DBError(c, err) {
+			c.Abort()
+			return
+		}
+		if !ok {
+			utils.Fail(c, utils.CodeAdminRequired, nil)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func UserID(c *gin.Context) int64 {
+	id, _ := c.Get(UserIDKey)
+	v, _ := id.(int64)
+	return v
+}

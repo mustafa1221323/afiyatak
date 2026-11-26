@@ -1,0 +1,118 @@
+# Fly.io Demo Instance — Setup Guide
+
+One-time setup for the public demo at `demo.lyftr.app` (or your chosen subdomain).
+
+## Prerequisites
+
+```bash
+# Install flyctl
+curl -L https://fly.io/install.sh | sh
+
+# Log in
+fly auth login
+```
+
+## 1. Create the app and volume
+
+```bash
+# From the project root
+fly apps create lyftr-demo            # or your preferred name
+fly volumes create lyftr_data --app lyftr-demo --region fra --size 1
+```
+
+## 2. Set secrets
+
+```bash
+fly secrets set JWT_SECRET=$(openssl rand -hex 32) --app lyftr-demo
+```
+
+## 3. Update fly.toml
+
+Edit `fly.toml` — set `app`, `CORS_ORIGIN` and `[env].CORS_ORIGIN` to your final URL
+(e.g. `https://lyftr-demo.fly.dev` or `https://demo.lyftr.app`).
+
+## 4. Deploy
+
+```bash
+fly deploy --app lyftr-demo
+```
+
+The first deploy will:
+- Start the Go backend
+- Seed the demo user (`demo@lyftr.local` / `password123`) — this happens because
+  `fly.toml` sets `DEMO_MODE = "true"`. It is off by default everywhere else, and
+  without it the demo deploys with no account to log into
+- Begin importing the whole exercise catalog (800+ exercises, English and Spanish) from open-exercise-db in the background (under a minute)
+- `DemoData` goroutine waits for exercises then seeds 8 weeks of workouts,
+  90 days of weight logs, and 7 days of food logs automatically
+
+## 5. Create the seed snapshot
+
+Once exercises and demo data are fully seeded (~60s after first deploy):
+
+```bash
+fly ssh console --app lyftr-demo -C "/app/snapshot.sh"
+```
+
+The DB runs in WAL mode, so recent writes can still be sitting in `lyftr.db-wal`
+rather than folded into `lyftr.db` — `snapshot.sh` stops the backend first (it
+restarts on its own within seconds, same as `reset.sh`) and copies the
+`-wal`/`-shm` side files too, when present, so the snapshot doesn't silently
+miss whatever hasn't been checkpointed yet.
+
+From this point the hourly cron (`reset.sh`) will restore this snapshot every hour,
+keeping the demo clean regardless of what visitors do.
+
+The reset restores user data only. It keeps the live exercise catalog and its
+`catalog_sync` record (the last catalog pass), so the restarted backend sees a
+catalog synced under 24 hours ago and does not download it from open-exercise-db
+again; the daily refresh still happens, on the first restart after it falls due.
+This needs a snapshot that has the `catalog_sync` table, i.e. one taken on a build
+that includes it. With an older snapshot the reset logs "could not keep the live
+exercise catalog" and every hourly restart re-syncs the whole catalog. To fix that,
+take a fresh snapshot from a clean, synced database:
+
+```bash
+fly ssh console --app lyftr-demo -C "/app/reset.sh"
+# wait until the logs show: exercises: synced ... in "es"
+fly logs --app lyftr-demo
+fly ssh console --app lyftr-demo -C "/app/snapshot.sh"
+```
+
+## 6. Custom domain (optional)
+
+```bash
+fly certs add demo.lyftr.app --app lyftr-demo
+```
+
+Then add a CNAME `demo.lyftr.app → lyftr-demo.fly.dev` in your DNS.
+Update `CORS_ORIGIN` in `fly.toml` and redeploy.
+
+## Ongoing operations
+
+```bash
+# Check logs
+fly logs --app lyftr-demo
+
+# Check the reset job's own log (persists across restarts/redeploys)
+fly ssh console --app lyftr-demo -C "cat /app/data/reset.log"
+
+# Manual reset
+fly ssh console --app lyftr-demo -C "/app/reset.sh"
+
+# Redeploy after code changes
+fly deploy --app lyftr-demo
+
+# Update seed snapshot after improving demo data
+fly ssh console --app lyftr-demo -C "/app/snapshot.sh"
+```
+
+## Architecture
+
+Single Fly machine running:
+- **nginx** (port 80) — serves React SPA, proxies `/api/` → localhost:3000
+- **Go backend** (port 3000) — in a restart loop (so reset.sh can kill and restart it)
+- **crond** — runs `reset.sh` at the top of every hour
+
+SQLite DB lives on a persistent Fly volume at `/app/data/lyftr.db`.
+Seed snapshot lives alongside it at `/app/data/lyftr.seed.db`.

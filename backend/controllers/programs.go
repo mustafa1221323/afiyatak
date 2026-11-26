@@ -1,0 +1,195 @@
+package controllers
+
+import (
+	"database/sql"
+	"strconv"
+
+	"github.com/Cawlumm/lyftr-backend/middleware"
+	"github.com/Cawlumm/lyftr-backend/models"
+	"github.com/Cawlumm/lyftr-backend/stores"
+	"github.com/Cawlumm/lyftr-backend/utils"
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/go-playground/validator/v10"
+)
+
+// Days/Exercises/Sets in CreateProgramRequest each cap at max=500 independently
+// (models.go), which doesn't bound their product across three nested levels — a
+// request with 500 days x 500 exercises x 500 sets still passes those tags. This
+// struct-level check enforces the total-rows bound (models.MaxProgramRows) that
+// insertProgramDays's single-transaction processing actually needs, since
+// db.DB.SetMaxOpenConns(1) means that transaction holds the process's only SQLite
+// connection for the whole request. Mirrors controllers/workouts.go's init().
+func init() {
+	validate.RegisterStructValidation(func(sl validator.StructLevel) {
+		req := sl.Current().Interface().(models.CreateProgramRequest)
+		total := 0
+		for _, d := range req.Days {
+			total++
+			groups := make([]*int, len(d.Exercises))
+			for i, ex := range d.Exercises {
+				total++
+				total += len(ex.Sets)
+				groups[i] = ex.SupersetGroup
+			}
+			if !d.IsRestDay && !stores.SupersetsContiguous(groups) {
+				sl.ReportError(req.Days, "Days", "Days", "supersetcontiguous", "")
+			}
+		}
+		if total > models.MaxProgramRows {
+			sl.ReportError(req.Days, "Days", "Days", "maxtotalrows", "")
+		}
+	}, models.CreateProgramRequest{})
+}
+
+func (h *Handler) ListPrograms(c *gin.Context) {
+	uid := middleware.UserID(c)
+	f := stores.ProgramFilter{Limit: 20, Query: c.Query("q")}
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		f.Limit = l
+	}
+	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
+		f.Offset = o
+	}
+	programs, err := h.s.Program.List(uid, f, requestLocale(c))
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, programs)
+}
+
+func (h *Handler) GetProgram(c *gin.Context) {
+	uid := middleware.UserID(c)
+	pid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidProgramID, nil)
+		return
+	}
+	p, err := h.s.Program.Get(uid, pid, requestLocale(c))
+	if err == sql.ErrNoRows {
+		utils.Fail(c, utils.CodeProgramNotFound, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, p)
+}
+
+func (h *Handler) CreateProgram(c *gin.Context) {
+	uid := middleware.UserID(c)
+	var req models.CreateProgramRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BindError(c, err)
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		utils.ValidationError(c, err)
+		return
+	}
+	if !h.exercisesVisible(c, uid, programExerciseIDs(&req)) {
+		return
+	}
+	p, err := h.s.Program.Create(uid, req, requestLocale(c))
+	if utils.IsForeignKeyViolation(err) {
+		utils.Fail(c, utils.CodeUnknownExercises, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.Created(c, p)
+}
+
+func (h *Handler) UpdateProgram(c *gin.Context) {
+	uid := middleware.UserID(c)
+	pid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidProgramID, nil)
+		return
+	}
+	var req models.CreateProgramRequest
+	// BodyWith keeps the body, so supersetsOmitted can tell an absent superset_group from null.
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		utils.BindError(c, err)
+		return
+	}
+	req.LegacySupersets = supersetsOmitted(c)
+	if err := validate.Struct(req); err != nil {
+		utils.ValidationError(c, err)
+		return
+	}
+	if !h.exercisesVisible(c, uid, programExerciseIDs(&req)) {
+		return
+	}
+	p, err := h.s.Program.Update(uid, pid, req, requestLocale(c))
+	if err == sql.ErrNoRows {
+		utils.Fail(c, utils.CodeProgramNotFound, nil)
+		return
+	}
+	if utils.IsForeignKeyViolation(err) {
+		utils.Fail(c, utils.CodeUnknownExercises, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, p)
+}
+
+func (h *Handler) DeleteProgram(c *gin.Context) {
+	uid := middleware.UserID(c)
+	pid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidProgramID, nil)
+		return
+	}
+	n, err := h.s.Program.Delete(uid, pid)
+	if utils.DBError(c, err) {
+		return
+	}
+	if n == 0 {
+		utils.Fail(c, utils.CodeProgramNotFound, nil)
+		return
+	}
+	utils.OK(c, gin.H{"deleted": true})
+}
+
+// ResolveSuggestions accepts/dismisses staged auto-progression suggestions (#40) and
+// returns the refreshed program. Ownership is enforced in the store.
+func (h *Handler) ResolveSuggestions(c *gin.Context) {
+	uid := middleware.UserID(c)
+	pid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidProgramID, nil)
+		return
+	}
+	var req models.ResolveSuggestionsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BindError(c, err)
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		utils.ValidationError(c, err)
+		return
+	}
+	p, err := h.s.Program.ResolveSuggestions(uid, pid, req.Accept, req.Dismiss, requestLocale(c))
+	if err == sql.ErrNoRows {
+		utils.Fail(c, utils.CodeProgramNotFound, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, p)
+}
+
+func programExerciseIDs(req *models.CreateProgramRequest) []*int64 {
+	var ids []*int64
+	for d := range req.Days {
+		for e := range req.Days[d].Exercises {
+			ids = append(ids, &req.Days[d].Exercises[e].ExerciseID)
+		}
+	}
+	return ids
+}

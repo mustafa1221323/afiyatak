@@ -1,0 +1,384 @@
+package controllers
+
+import (
+	"fmt"
+	"net/http"
+	"testing"
+
+	"github.com/Cawlumm/lyftr-backend/db"
+)
+
+func TestListWorkouts_empty(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/workouts", nil)
+	th.ListWorkouts(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data, ok := resp["data"].([]any)
+	if !ok {
+		t.Fatalf("expected data array, got %T", resp["data"])
+	}
+	if len(data) != 0 {
+		t.Fatalf("expected empty list, got %d items", len(data))
+	}
+}
+
+func TestCreateWorkout_success(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	exID := createTestExercise(t)
+
+	body := map[string]any{
+		"name":     "Push Day",
+		"notes":    "felt strong",
+		"duration": 3600,
+		"exercises": []map[string]any{
+			{
+				"exercise_id": exID,
+				"notes":       "",
+				"sets": []map[string]any{
+					{"set_number": 1, "reps": 8, "weight": 100.0},
+					{"set_number": 2, "reps": 8, "weight": 100.0},
+				},
+			},
+		},
+	}
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/workouts", body)
+	th.CreateWorkout(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"] != "Push Day" {
+		t.Errorf("expected name 'Push Day', got %v", data["name"])
+	}
+	exercises, ok := data["exercises"].([]any)
+	if !ok || len(exercises) != 1 {
+		t.Errorf("expected 1 exercise, got %v", data["exercises"])
+	}
+}
+
+func TestCreateWorkout_missingName(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	body := map[string]any{
+		"name":      "",
+		"exercises": []map[string]any{},
+	}
+	c, w := newContext(uid, http.MethodPost, "/api/v1/workouts", body)
+	th.CreateWorkout(c)
+
+	if w.Code == http.StatusCreated {
+		t.Fatal("expected error for empty name, got 201")
+	}
+}
+
+func TestCreateWorkout_preservesStartedAt(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	exID := createTestExercise(t)
+
+	startedAt := "2024-01-15T09:30:00Z"
+	body := map[string]any{
+		"name":       "Morning Lift",
+		"duration":   60,
+		"started_at": startedAt,
+		"exercises": []map[string]any{
+			{
+				"exercise_id": exID,
+				"sets":        []map[string]any{{"set_number": 1, "reps": 5, "weight": 80.0}},
+			},
+		},
+	}
+
+	c, w := newContext(uid, http.MethodPost, "/api/v1/workouts", body)
+	th.CreateWorkout(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if sa, ok := data["started_at"].(string); !ok || sa == "" {
+		t.Errorf("started_at missing in response: %v", data["started_at"])
+	}
+}
+
+func TestGetWorkout_ownershipEnforced(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	// Create second user
+	res, _ := db.DB.Exec(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, "other@example.com", "x")
+	otherUID, _ := res.LastInsertId()
+
+	// Create workout as otherUID
+	res2, _ := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+		otherUID, "Other's Workout",
+	)
+	wid, _ := res2.LastInsertId()
+
+	// Try to GET as uid (different user)
+	c, w := newContext(uid, http.MethodGet, "/api/v1/workouts/"+fmt.Sprint(wid), nil)
+	setParam(c, "id", fmt.Sprint(wid))
+	th.GetWorkout(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-user access, got %d", w.Code)
+	}
+}
+
+func TestDeleteWorkout_ownershipEnforced(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	res, _ := db.DB.Exec(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, "other2@example.com", "x")
+	otherUID, _ := res.LastInsertId()
+
+	res2, _ := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+		otherUID, "Protected Workout",
+	)
+	wid, _ := res2.LastInsertId()
+
+	c, w := newContext(uid, http.MethodDelete, "/api/v1/workouts/"+fmt.Sprint(wid), nil)
+	setParam(c, "id", fmt.Sprint(wid))
+	th.DeleteWorkout(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-user delete, got %d", w.Code)
+	}
+
+	// Verify workout still exists
+	var count int
+	db.DB.QueryRow(`SELECT COUNT(*) FROM workouts WHERE id = ?`, wid).Scan(&count)
+	if count != 1 {
+		t.Fatal("workout was deleted by wrong user")
+	}
+}
+
+func TestUpdateWorkout_preservesStartedAt(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	exID := createTestExercise(t)
+
+	originalTime := "2024-03-01T08:00:00Z"
+	res, _ := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, ?)`,
+		uid, "Original Name", originalTime,
+	)
+	wid, _ := res.LastInsertId()
+
+	body := map[string]any{
+		"name":       "Updated Name",
+		"duration":   1800,
+		"started_at": originalTime,
+		"exercises": []map[string]any{
+			{
+				"exercise_id": exID,
+				"sets":        []map[string]any{{"set_number": 1, "reps": 10, "weight": 50.0}},
+			},
+		},
+	}
+
+	c, w := newContext(uid, http.MethodPut, "/api/v1/workouts/"+fmt.Sprint(wid), body)
+	setParam(c, "id", fmt.Sprint(wid))
+	th.UpdateWorkout(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeResponse(t, w)
+	data := resp["data"].(map[string]any)
+	if data["name"] != "Updated Name" {
+		t.Errorf("name not updated: %v", data["name"])
+	}
+}
+
+// TestUpdateWorkout_OmittedStartedAtKeepsStoredValue: a PUT that omits started_at
+// (name/notes-only patch) must not rewrite the stored timestamp to the zero time —
+// stored started_at ordering is the due-day tracker's anchor
+// (ProgramStore.currentDayIndex), so a 0001-01-01 rewrite would silently drop the
+// workout to oldest and rewire which row anchors the tracker.
+func TestUpdateWorkout_OmittedStartedAtKeepsStoredValue(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	exID := createTestExercise(t)
+
+	originalTime := "2024-03-01T08:00:00Z"
+	res, _ := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, ?)`,
+		uid, "Original Name", originalTime,
+	)
+	wid, _ := res.LastInsertId()
+
+	body := map[string]any{ // no started_at
+		"name": "Renamed",
+		"exercises": []map[string]any{
+			{
+				"exercise_id": exID,
+				"sets":        []map[string]any{{"set_number": 1, "reps": 10, "weight": 50.0}},
+			},
+		},
+	}
+	c, w := newContext(uid, http.MethodPut, "/api/v1/workouts/"+fmt.Sprint(wid), body)
+	setParam(c, "id", fmt.Sprint(wid))
+	th.UpdateWorkout(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored string
+	if err := db.DB.QueryRow(`SELECT CAST(started_at AS TEXT) FROM workouts WHERE id = ?`, wid).Scan(&stored); err != nil {
+		t.Fatalf("read stored started_at: %v", err)
+	}
+	if stored != originalTime {
+		t.Fatalf("started_at rewritten by an update that omitted it: got %q, want %q", stored, originalTime)
+	}
+}
+
+func TestListWorkouts_limitCap(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+
+	// Insert 5 workouts
+	for i := 0; i < 5; i++ {
+		db.DB.Exec(
+			`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
+			uid, fmt.Sprintf("Workout %d", i),
+		)
+	}
+
+	// Request with limit=200 (above cap of 100)
+	c, w := newContext(uid, http.MethodGet, "/api/v1/workouts?limit=200", nil)
+	c.Request.URL.RawQuery = "limit=200"
+	th.ListWorkouts(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// Should still return results (capped at 100, but we only have 5)
+	resp := decodeResponse(t, w)
+	data := resp["data"].([]any)
+	if len(data) != 5 {
+		t.Errorf("expected 5 workouts, got %d", len(data))
+	}
+}
+
+func TestListWorkouts_filtersBySearchQuery(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	other := otherUser(t)
+
+	db.DB.Exec(`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, CURRENT_TIMESTAMP)`, uid, "Morning Push")
+	db.DB.Exec(`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, CURRENT_TIMESTAMP)`, uid, "Leg Session")
+	// Same matching name under another user — must NOT leak across users.
+	db.DB.Exec(`INSERT INTO workouts (user_id, name, started_at) VALUES (?, ?, CURRENT_TIMESTAMP)`, other, "Morning Push (theirs)")
+
+	c, w := newContext(uid, http.MethodGet, "/api/v1/workouts?q=push", nil)
+	c.Request.URL.RawQuery = "q=push" // case-insensitive LIKE on name, scoped by user
+	th.ListWorkouts(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	data := decodeResponse(t, w)["data"].([]any)
+	if len(data) != 1 {
+		t.Fatalf("expected 1 match for q=push (case-insensitive, excludes 'Leg Session' and the other user's), got %d", len(data))
+	}
+	if name := data[0].(map[string]any)["name"]; name != "Morning Push" {
+		t.Errorf("expected 'Morning Push', got %v", name)
+	}
+}
+
+// An edit that moves the day also moves the instant, so the offset stored beside it
+// must be the one that instant was chosen in. Leaving the creation-time offset on a
+// rewritten timestamp makes every reader derive a different day than the edit screen
+// showed: logged from UTC+14, edited from UTC-11, the workout lands a day early.
+func TestUpdateWorkout_carriesTZOffsetWithMovedInstant(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	exID := createTestExercise(t)
+
+	// Created far east: noon local on the 9th is 22:00Z on the 8th.
+	res, _ := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at, tz_offset_minutes) VALUES (?, ?, ?, ?)`,
+		uid, "Created east", "2026-08-08T22:00:00Z", 840,
+	)
+	wid, _ := res.LastInsertId()
+
+	// Re-dated from far west: noon local on the 5th is 23:00Z the same day.
+	body := map[string]any{
+		"name":              "Edited west",
+		"duration":          1800,
+		"started_at":        "2026-08-05T23:00:00Z",
+		"tz_offset_minutes": -660,
+		"exercises": []map[string]any{
+			{
+				"exercise_id": exID,
+				"sets":        []map[string]any{{"set_number": 1, "reps": 10, "weight": 50.0}},
+			},
+		},
+	}
+	c, w := newContext(uid, http.MethodPut, "/api/v1/workouts/"+fmt.Sprint(wid), body)
+	setParam(c, "id", fmt.Sprint(wid))
+	th.UpdateWorkout(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var off int
+	if err := db.DB.QueryRow(`SELECT tz_offset_minutes FROM workouts WHERE id = ?`, wid).Scan(&off); err != nil {
+		t.Fatalf("read offset: %v", err)
+	}
+	if off != -660 {
+		t.Fatalf("offset not carried with the moved instant: got %d, want -660 (stale 840 means the day drifts)", off)
+	}
+}
+
+// A name/notes-only patch carries no instant, so it must leave the offset alone —
+// the workout still happened where it happened.
+func TestUpdateWorkout_omittedStartedAtKeepsTZOffset(t *testing.T) {
+	setupTestDB(t)
+	uid := createTestUser(t)
+	exID := createTestExercise(t)
+
+	res, _ := db.DB.Exec(
+		`INSERT INTO workouts (user_id, name, started_at, tz_offset_minutes) VALUES (?, ?, ?, ?)`,
+		uid, "Original", "2026-08-08T22:00:00Z", 840,
+	)
+	wid, _ := res.LastInsertId()
+
+	body := map[string]any{
+		"name":     "Renamed only",
+		"duration": 1800,
+		"exercises": []map[string]any{
+			{
+				"exercise_id": exID,
+				"sets":        []map[string]any{{"set_number": 1, "reps": 10, "weight": 50.0}},
+			},
+		},
+	}
+	c, w := newContext(uid, http.MethodPut, "/api/v1/workouts/"+fmt.Sprint(wid), body)
+	setParam(c, "id", fmt.Sprint(wid))
+	th.UpdateWorkout(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var off int
+	if err := db.DB.QueryRow(`SELECT tz_offset_minutes FROM workouts WHERE id = ?`, wid).Scan(&off); err != nil {
+		t.Fatalf("read offset: %v", err)
+	}
+	if off != 840 {
+		t.Fatalf("rename rewrote the offset: got %d, want 840", off)
+	}
+}

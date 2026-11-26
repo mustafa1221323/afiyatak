@@ -1,0 +1,332 @@
+import { i18n } from '../i18n'
+import { catalogSyncLines, CUSTOM_EXERCISE_CATEGORIES, CUSTOM_EXERCISE_EQUIPMENT, CUSTOM_EXERCISE_MUSCLES, categoryLabel, equipmentLabel, exerciseBrowseFiltered, exerciseBrowseParams, exerciseCatalogEmpty, exerciseNameFromQuery, exerciseSteps, instructionSteps, linesToText, textLines, EXERCISE_FILTER_EQUIPMENT, EXERCISE_FILTER_MUSCLES, hasEquipmentToShow, muscleLabel, resolveMuscleSlugs } from './exerciseUtils'
+
+// A stand-in for the per-platform tables — the rule under test is the lookup, not any
+// particular library's slug vocabulary.
+const TABLE: Record<string, string[]> = {
+  chest: ['chest'],
+  legs: ['quadriceps', 'hamstring', 'calves', 'gluteal'],
+  quadriceps: ['quadriceps'],
+  'anterior deltoid': ['front-deltoids'],
+}
+
+describe('resolveMuscleSlugs', () => {
+  it('maps an exact muscle name to its body-diagram slugs', () => {
+    expect(resolveMuscleSlugs('legs', TABLE)).toEqual(['quadriceps', 'hamstring', 'calves', 'gluteal'])
+  })
+
+  it('normalizes case and surrounding whitespace before matching', () => {
+    expect(resolveMuscleSlugs('  Chest ', TABLE)).toEqual(['chest'])
+  })
+
+  it('falls back to a partial match in either direction', () => {
+    // key shorter than the table entry
+    expect(resolveMuscleSlugs('quad', TABLE)).toEqual(['quadriceps'])
+    // key longer than the table entry — free-text names from the exercise DB
+    expect(resolveMuscleSlugs('left anterior deltoid head', TABLE)).toEqual(['front-deltoids'])
+  })
+
+  it('returns [] for empty or unknown input', () => {
+    expect(resolveMuscleSlugs('', TABLE)).toEqual([])
+    expect(resolveMuscleSlugs('zzz', TABLE)).toEqual([])
+  })
+})
+
+// The table equipmentLabel replaced, kept here so English is pinned to what it rendered.
+const OLD_EQUIPMENT_LABEL: Record<string, string> = {
+  'body-only': 'Bodyweight', 'barbell': 'Barbell', 'dumbbell': 'Dumbbell', 'machine': 'Machine',
+  'cable': 'Cable', 'kettlebells': 'Kettlebell', 'bands': 'Bands', 'medicine-ball': 'Med Ball',
+  'e-z-curl-bar': 'EZ Bar', 'exercise-ball': 'Exercise Ball', 'foam-roll': 'Foam Roll',
+  'none': 'None', 'other': 'Other',
+  'body only': 'Bodyweight', 'medicine ball': 'Med Ball', 'e-z curl bar': 'EZ Bar',
+  'exercise ball': 'Exercise Ball', 'foam roll': 'Foam Roll',
+}
+
+afterEach(async () => { await i18n.changeLanguage('en') })
+
+describe('equipmentLabel', () => {
+  it('gives every raw key and pre-migration alias the label the old table did (en)', () => {
+    for (const [raw, label] of Object.entries(OLD_EQUIPMENT_LABEL)) {
+      expect({ raw, label: equipmentLabel(raw) }).toEqual({ raw, label })
+    }
+  })
+
+  it('passes an unknown or empty value through as it came', () => {
+    expect(equipmentLabel('sandbag')).toBe('sandbag')
+    expect(equipmentLabel('')).toBe('')
+    expect(equipmentLabel(undefined)).toBe('')
+  })
+
+  it('reads in the active language (es), spaced and hyphenated spellings alike', async () => {
+    await i18n.changeLanguage('es')
+    expect(equipmentLabel('body-only')).toBe('Peso corporal')
+    expect(equipmentLabel('body only')).toBe('Peso corporal')
+    expect(equipmentLabel('sandbag')).toBe('sandbag')
+  })
+})
+
+describe('muscleLabel', () => {
+  it('gives the slug back unchanged in en, as the screens rendered it before the catalog', () => {
+    for (const slug of ['chest', 'full-body', 'quadriceps', 'abs']) {
+      expect(muscleLabel(slug)).toBe(slug)
+    }
+  })
+
+  // The two back slugs are hyphenated for the API, which reads as a typo on a chip.
+  it('spaces the hyphenated back slugs in en', () => {
+    expect(muscleLabel('lower-back')).toBe('lower back')
+    expect(muscleLabel('middle-back')).toBe('middle back')
+  })
+
+  it('passes an unknown or empty value through as it came', () => {
+    expect(muscleLabel('rotator cuff')).toBe('rotator cuff')
+    expect(muscleLabel('lower back')).toBe('lower back')
+    expect(muscleLabel('Chest')).toBe('Chest')
+    expect(muscleLabel('')).toBe('')
+    expect(muscleLabel(undefined)).toBe('')
+  })
+
+  it('reads in the active language (es)', async () => {
+    await i18n.changeLanguage('es')
+    expect(muscleLabel('lower-back')).toBe('espalda baja')
+    expect(muscleLabel('chest')).toBe('pecho')
+  })
+})
+
+describe('categoryLabel', () => {
+  it('gives the slug back unchanged in en, as the screens rendered it before the catalog', () => {
+    for (const slug of ['strength', 'stretching', 'plyometrics', 'strongman', 'powerlifting', 'cardio', 'olympic-weightlifting']) {
+      expect(categoryLabel(slug)).toBe(slug)
+    }
+  })
+
+  it('shows the pre-migration spaced spelling as it came in en', () => {
+    expect(categoryLabel('olympic weightlifting')).toBe('olympic weightlifting')
+  })
+
+  it('passes an unknown or empty value through as it came', () => {
+    expect(categoryLabel('flexibility')).toBe('flexibility')
+    expect(categoryLabel('')).toBe('')
+    expect(categoryLabel(undefined)).toBe('')
+  })
+
+  it('reads in the active language (es), spaced and hyphenated spellings alike', async () => {
+    await i18n.changeLanguage('es')
+    expect(categoryLabel('strength')).toBe('fuerza')
+    expect(categoryLabel('plyometrics')).toBe('pliometría')
+    expect(categoryLabel('olympic-weightlifting')).toBe('halterofilia')
+    expect(categoryLabel('olympic weightlifting')).toBe('halterofilia')
+    expect(categoryLabel('flexibility')).toBe('flexibility')
+  })
+})
+
+describe('exerciseCatalogEmpty (locale-independent)', () => {
+  const settled = { items: [], hasMore: false, error: null }
+
+  it('is true for an unfiltered page that settled empty', () => {
+    expect(exerciseCatalogEmpty('', settled)).toBe(true)
+  })
+
+  it('is false for a search that matched nothing', () => {
+    expect(exerciseCatalogEmpty('squat', settled)).toBe(false)
+  })
+
+  it('is false while a page is still expected', () => {
+    expect(exerciseCatalogEmpty('', { ...settled, hasMore: true })).toBe(false)
+  })
+
+  it('is false after a failure', () => {
+    expect(exerciseCatalogEmpty('', { ...settled, error: 'offline' })).toBe(false)
+  })
+
+  it('is false when rows arrived', () => {
+    expect(exerciseCatalogEmpty('', { ...settled, items: [{ id: 1 }] })).toBe(false)
+  })
+})
+
+describe('catalogSyncLines', () => {
+  // The clock is 2026-10-10 15:00 local, so "today" times draw as a time alone. English
+  // unless a case says otherwise.
+  beforeEach(() => { jest.useFakeTimers({ now: new Date(2026, 9, 10, 15, 0) }) })
+  afterEach(async () => {
+    jest.useRealTimers()
+    await i18n.changeLanguage('en')
+  })
+
+  const at = (h: number, m = 0) => new Date(2026, 9, 10, h, m).toISOString()
+
+  it('says nothing without a status or from a server too old to send sync fields', () => {
+    expect(catalogSyncLines(null)).toEqual([])
+    expect(catalogSyncLines({ count: 5 })).toEqual([])
+  })
+
+  it('reports the last clean pass', () => {
+    expect(catalogSyncLines({ count: 5, last_synced_at: at(14) })).toEqual([{ text: 'Last synced at 2:00 PM', warning: false }])
+  })
+
+  it('says Syncing while a pass runs and hides the failure', () => {
+    const lines = catalogSyncLines({ count: 5, syncing: true, last_failed: true, last_failure: 'other', last_synced_at: at(14) })
+    expect(lines).toEqual([
+      { text: 'Last synced at 2:00 PM', warning: false },
+      { text: 'Syncing…', warning: false },
+    ])
+  })
+
+  it('names an unreachable catalog and the retry time', () => {
+    expect(catalogSyncLines({ count: 5, last_failed: true, last_failure: 'unreachable', next_attempt_at: at(15, 30) })).toEqual([
+      { text: "Last sync couldn't reach the exercise catalog. Trying again at 3:30 PM.", warning: true },
+    ])
+  })
+
+  it('uses the generic sentence for any other reason, known or not', () => {
+    const generic = "Last sync didn't finish. Trying again at 3:30 PM."
+    expect(catalogSyncLines({ count: 5, last_failed: true, last_failure: 'other', next_attempt_at: at(15, 30) })[0].text).toBe(generic)
+    expect(catalogSyncLines({ count: 5, last_failed: true, last_failure: 'newer' as 'other', next_attempt_at: at(15, 30) })[0].text).toBe(generic)
+  })
+
+  it('drops the retry clause when the time is past or unknown', () => {
+    const base = { count: 5, last_failed: true, last_failure: 'other' as const }
+    expect(catalogSyncLines({ ...base, next_attempt_at: at(14, 59) })[0].text).toBe("Last sync didn't finish.")
+    expect(catalogSyncLines({ ...base, next_attempt_at: null })[0].text).toBe("Last sync didn't finish.")
+  })
+
+  it('draws in Spanish', async () => {
+    await i18n.changeLanguage('es')
+    const text = catalogSyncLines({ count: 5, last_failed: true, last_failure: 'other', next_attempt_at: at(15, 30) })[0].text
+    expect(text).toContain('Nuevo intento: 15:30.')
+  })
+})
+
+describe('exerciseBrowseParams', () => {
+  const none = { query: '', muscle: null, equipment: null }
+
+  it('omits every empty filter rather than sending an empty one', () => {
+    expect(exerciseBrowseParams(none)).toEqual({})
+  })
+
+  it('trims the query and treats whitespace-only as no query', () => {
+    expect(exerciseBrowseParams({ ...none, query: '  press ' })).toEqual({ q: 'press' })
+    expect(exerciseBrowseParams({ ...none, query: '   ' })).toEqual({})
+  })
+
+  it('maps muscle and equipment to the server param names', () => {
+    expect(exerciseBrowseParams({ query: 'curl', muscle: 'biceps', equipment: 'dumbbell' })).toEqual({
+      q: 'curl', muscle_group: 'biceps', equipment: 'dumbbell',
+    })
+  })
+})
+
+describe('exerciseBrowseFiltered', () => {
+  it('is false with nothing narrowing the list, true for any one filter', () => {
+    expect(exerciseBrowseFiltered({ query: '', muscle: null, equipment: null })).toBe(false)
+    expect(exerciseBrowseFiltered({ query: ' ', muscle: null, equipment: null })).toBe(false)
+    expect(exerciseBrowseFiltered({ query: 'x', muscle: null, equipment: null })).toBe(true)
+    expect(exerciseBrowseFiltered({ query: '', muscle: 'chest', equipment: null })).toBe(true)
+    expect(exerciseBrowseFiltered({ query: '', muscle: null, equipment: 'cable' })).toBe(true)
+  })
+})
+
+describe('exercise filter chips', () => {
+  it('only offers slugs the label tables know, so no chip falls back to a raw slug', () => {
+    for (const m of EXERCISE_FILTER_MUSCLES) expect(muscleLabel(m)).toBe(i18n.t(`exercises.muscle.${m}`))
+    for (const e of EXERCISE_FILTER_EQUIPMENT) expect(equipmentLabel(e)).toBe(i18n.t(`exercises.equipment.${e}`))
+  })
+})
+
+describe('hasEquipmentToShow', () => {
+  it('hides the values the catalogue uses to say nothing', () => {
+    for (const none of ['other', 'none', 'None', '', '  ', null, undefined]) expect(hasEquipmentToShow(none)).toBe(false)
+  })
+
+  it('shows real equipment, including the legacy spaced spelling', () => {
+    for (const real of ['barbell', 'body-only', 'body only', 'e-z-curl-bar']) expect(hasEquipmentToShow(real)).toBe(true)
+  })
+})
+
+describe('muscle filter chips', () => {
+  it('offers no alias the catalogue never returns, and no duplicates', () => {
+    for (const dead of ['back', 'abs', 'core', 'legs', 'obliques', 'full-body', 'other']) {
+      expect(EXERCISE_FILTER_MUSCLES).not.toContain(dead)
+    }
+    expect(new Set(EXERCISE_FILTER_MUSCLES).size).toBe(EXERCISE_FILTER_MUSCLES.length)
+  })
+})
+
+describe('custom exercise taxonomy', () => {
+  // The server holds itself to the same JSON (backend/stores/taxonomy_test.go).
+  it('offers the muscles the catalogue uses, which are the filter chips; no alias, no "none", no repeats', () => {
+    expect([...CUSTOM_EXERCISE_MUSCLES].sort()).toEqual([...EXERCISE_FILTER_MUSCLES].sort())
+    for (const dead of ['back', 'abs', 'core', 'legs', 'obliques', 'full-body', 'other']) expect(CUSTOM_EXERCISE_MUSCLES).not.toContain(dead)
+    expect(CUSTOM_EXERCISE_EQUIPMENT).not.toContain('none')
+    expect(CUSTOM_EXERCISE_EQUIPMENT).toHaveLength(12)
+    expect(CUSTOM_EXERCISE_CATEGORIES).toHaveLength(7)
+    for (const list of [CUSTOM_EXERCISE_MUSCLES, CUSTOM_EXERCISE_EQUIPMENT, CUSTOM_EXERCISE_CATEGORIES]) expect(new Set(list).size).toBe(list.length)
+  })
+
+  it('every value has a label in the catalog', () => {
+    for (const m of CUSTOM_EXERCISE_MUSCLES) expect(i18n.exists(`exercises.muscle.${m}`)).toBe(true)
+    for (const e of CUSTOM_EXERCISE_EQUIPMENT) expect(i18n.exists(`exercises.equipment.${e}`)).toBe(true)
+    for (const c of CUSTOM_EXERCISE_CATEGORIES) expect(i18n.exists(`exercises.category.${c}`)).toBe(true)
+  })
+})
+
+describe('exerciseNameFromQuery', () => {
+  it('capitalises each word of a lowercase search', () => {
+    expect(exerciseNameFromQuery('soleus slouch')).toBe('Soleus Slouch')
+  })
+  it('leaves words that already hold a capital as the user spelled them', () => {
+    expect(exerciseNameFromQuery('single leg RDL')).toBe('Single Leg RDL')
+    expect(exerciseNameFromQuery('mcGill curl-up')).toBe('mcGill Curl-up')
+  })
+  it('trims, keeps inner spacing, and handles accents, digits and emoji', () => {
+    expect(exerciseNameFromQuery('  élan  3/4 sit-up ')).toBe('Élan  3/4 Sit-up')
+    expect(exerciseNameFromQuery('🔥 burner')).toBe('🔥 Burner')
+    expect(exerciseNameFromQuery('   ')).toBe('')
+  })
+})
+
+describe('instructionSteps', () => {
+  it('one step per non-empty line, trimmed, blank lines dropped', () => {
+    expect(instructionSteps('  Stand tall \n\n   \nPress up\n')).toEqual(['Stand tall', 'Press up'])
+  })
+
+  it('drops a leading "N." or "N)" so numbering is uniform, and only there', () => {
+    expect(instructionSteps('1. Stand tall\n2) Press up\n10.   Lower\nDo 3. reps')).toEqual(['Stand tall', 'Press up', 'Lower', 'Do 3. reps'])
+    // A step that starts with a number keeps it: only "1. " / "2) " is a step number.
+    expect(instructionSteps('1.5 reps hold\n2.B')).toEqual(['1.5 reps hold', '2.B'])
+  })
+
+  it('nothing for empty or missing text', () => {
+    expect(instructionSteps('')).toEqual([])
+    expect(instructionSteps(undefined)).toEqual([])
+    expect(instructionSteps(' \n ')).toEqual([])
+  })
+})
+
+describe('exerciseSteps', () => {
+  it('uses the list when the server sent one', () => {
+    expect(exerciseSteps({ instructions: ['a', 'b'], description: '1. x' })).toEqual(['a', 'b'])
+  })
+
+  it('an empty list is an answer, not a missing field', () => {
+    expect(exerciseSteps({ instructions: [], description: '1. x' })).toEqual([])
+  })
+
+  it('falls back to parsing the description from a server that sends no list', () => {
+    expect(exerciseSteps({ description: '1. Stand\n2. Press' })).toEqual(['Stand', 'Press'])
+    expect(exerciseSteps({})).toEqual([])
+  })
+})
+
+describe('textLines / linesToText', () => {
+  it('keeps a custom exercise\'s lines as typed: trimmed, blank ones dropped, numbering left alone', () => {
+    expect(textLines('1. Stand tall\r\n\n  Press up \nSeat at 4')).toEqual(['1. Stand tall', 'Press up', 'Seat at 4'])
+    expect(textLines('')).toEqual([])
+    expect(linesToText(['1. Stand tall', 'Press up'])).toBe('1. Stand tall\nPress up')
+  })
+
+  it('falls back to the typed lines of a custom exercise when the server sends no list', () => {
+    expect(exerciseSteps({ is_custom: true, description: '1. Stand tall\nPress up' })).toEqual(['1. Stand tall', 'Press up'])
+    expect(exerciseSteps({ is_custom: false, description: '1. Stand tall\n2. Press up' })).toEqual(['Stand tall', 'Press up'])
+  })
+})

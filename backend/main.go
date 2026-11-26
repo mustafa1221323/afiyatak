@@ -1,0 +1,162 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/Cawlumm/lyftr-backend/config"
+	"github.com/Cawlumm/lyftr-backend/controllers"
+	"github.com/Cawlumm/lyftr-backend/db"
+	"github.com/Cawlumm/lyftr-backend/oedb"
+	"github.com/Cawlumm/lyftr-backend/routes"
+	"github.com/Cawlumm/lyftr-backend/seed"
+	"github.com/Cawlumm/lyftr-backend/stores"
+	"github.com/gin-gonic/gin"
+)
+
+// warnIfUnclaimed says out loud, on every start, that first-user mode currently has the
+// door open.
+//
+// first-user keys on the users table being empty, and that table lives on the data
+// volume — so a volume that failed to mount, or a `docker compose up` from the wrong
+// directory (which silently creates an empty ./data), is indistinguishable from a fresh
+// install and re-opens registration. Immich shipped the same shape and had exactly this
+// reported: immich-app/immich#24479, a reboot before the disk was mounted let anyone
+// register as admin.
+//
+// Nothing stored in the database can guard against it, because any marker we wrote would
+// be missing for the same reason. Only REGISTRATION=closed survives a missing volume,
+// which is why the docs treat first-user as a setup mode rather than a resting state.
+// What is left is to make the open door visible in the logs instead of silent.
+func warnIfUnclaimed() {
+	if config.C.Registration != config.RegistrationFirstUser {
+		return
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil || n > 0 {
+		return
+	}
+	log.Print("NOTICE: REGISTRATION=first-user and no accounts exist yet — registration is " +
+		"OPEN until the first one is created. If this instance already had an account, its " +
+		"data volume is not mounted: stop it before someone else claims it.")
+}
+
+// subcommands are the non-server entry points on this binary. Dispatched before
+// flag.Parse, which would otherwise treat the name as a positional argument and start the
+// server as usual.
+var subcommands = map[string]func(args []string) int{
+	"delete-account": runDeleteAccount,
+	"reset-password": runResetPassword,
+}
+
+// dispatchSubcommand runs a subcommand and reports its exit code, or -1 to carry on and
+// start the server.
+//
+// A bare word that is not a known subcommand is an error rather than something to ignore:
+// `lyftr-api reset-passwrod you@example.com` would otherwise silently boot the API, look
+// like it worked, and leave the operator believing a password had been reset. Anything
+// starting with "-" is left alone for flag.Parse.
+func dispatchSubcommand(argv []string) int {
+	if len(argv) < 2 || strings.HasPrefix(argv[1], "-") {
+		return -1
+	}
+	if run, ok := subcommands[argv[1]]; ok {
+		return run(argv[2:])
+	}
+	names := make([]string, 0, len(subcommands))
+	for name := range subcommands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fmt.Fprintf(os.Stderr, "unknown command %q\n", argv[1])
+	fmt.Fprintf(os.Stderr, "available commands: %s\n", strings.Join(names, ", "))
+	return 2
+}
+
+// newServer is r.Run with the timeouts it leaves unset. Without them a client that opens a
+// socket and dribbles a header, or never reads the response, holds a goroutine and a file
+// descriptor for ever (slowloris). WriteTimeout is generous because the slowest handler is
+// the admin catalog sync's status call and a large export, not user traffic.
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+func main() {
+	if code := dispatchSubcommand(os.Args); code >= 0 {
+		os.Exit(code)
+	}
+
+	showVersion := flag.Bool("version", false, "print the build version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("lyftr %s\n", config.Version())
+		os.Exit(0)
+	}
+
+	config.Load()
+	db.Connect()
+	warnIfUnclaimed()
+	// The demo account's credentials are published, so nothing gets it without asking:
+	// DEMO_MODE is opt-in everywhere, development included. Only the Fly demo (fly.toml)
+	// and a contributor who types DEMO_MODE=true turn it on.
+	//
+	// The else branch is not redundant. Turning the flag off stops the account being
+	// created and hides the one-tap button, but it cannot un-create one already in the
+	// database — and deleting it here would risk taking real workouts with it, since
+	// someone may have trained under that login. So an existing account keeps working and
+	// this warns at every startup until the operator removes it or changes its password.
+	if config.C.DemoMode {
+		seed.DemoUser(db.DB)
+	} else {
+		seed.WarnLeftoverDemoUser(db.DB)
+	}
+	// The background pass below imports the whole open-exercise-db catalog at boot and
+	// daily, and reads record rows too, so a fresh instance is usable before that pass
+	// finishes.
+	s := stores.New(db.DB)
+	catalog := oedb.New(config.C.OEDBBaseURL, config.Version())
+	s.Exercise.UseCatalog(catalog)
+	if len(config.C.OEDBCatalogURLs) > 0 {
+		s.Exercise.UseSnapshot(oedb.NewSnapshot(config.C.OEDBCatalogURLs, config.Version()))
+	}
+	// Thumbnails live beside the database, so they share its volume and its backups.
+	s.Thumbs = stores.NewThumbStore(db.DB, filepath.Join(filepath.Dir(config.C.DBPath), "thumbs"), catalog.BaseURL())
+	s.Photos.SetDir(filepath.Join(filepath.Dir(config.C.DBPath), "exercise-photos"))
+
+	// The demo's exercises are primed first so the boot pass translates them too.
+	go func() {
+		if config.C.DemoMode {
+			seed.DemoData(db.DB, s.Exercise)
+		}
+		s.Exercise.RunCatalogSync(context.Background(), stores.CatalogSyncInterval)
+	}()
+
+	if config.C.Env == "production" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	r := gin.Default()
+	h := controllers.NewHandler(s)
+	routes.Setup(r, h)
+
+	addr := ":" + config.C.Port
+	log.Printf("lyftr API listening on %s (env=%s)", addr, config.C.Env)
+	if err := newServer(addr, r).ListenAndServe(); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}

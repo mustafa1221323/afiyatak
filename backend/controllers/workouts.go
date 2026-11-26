@@ -1,0 +1,192 @@
+package controllers
+
+import (
+	"database/sql"
+	"strconv"
+
+	"github.com/Cawlumm/lyftr-backend/middleware"
+	"github.com/Cawlumm/lyftr-backend/models"
+	"github.com/Cawlumm/lyftr-backend/stores"
+	"github.com/Cawlumm/lyftr-backend/utils"
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/go-playground/validator/v10"
+)
+
+// Exercises/Sets in CreateWorkoutRequest each cap at max=500 independently (models.go),
+// which doesn't bound their product — a request with 500 exercises x 500 sets (250,000
+// rows) still passes those tags. This struct-level check enforces the total-sets bound
+// (models.MaxWorkoutSets) that CreateWorkoutWithProgression's single-transaction
+// processing actually needs, since db.DB.SetMaxOpenConns(1) means that transaction
+// holds the process's only SQLite connection for the whole request.
+func init() {
+	validate.RegisterStructValidation(func(sl validator.StructLevel) {
+		req := sl.Current().Interface().(models.CreateWorkoutRequest)
+		total := 0
+		groups := make([]*int, len(req.Exercises))
+		for i, ex := range req.Exercises {
+			total += len(ex.Sets)
+			groups[i] = ex.SupersetGroup
+		}
+		if !stores.SupersetsContiguous(groups) {
+			sl.ReportError(req.Exercises, "Exercises", "Exercises", "supersetcontiguous", "")
+		}
+		if total > models.MaxWorkoutSets {
+			sl.ReportError(req.Exercises, "Exercises", "Exercises", "maxtotalsets", "")
+		}
+	}, models.CreateWorkoutRequest{})
+}
+
+func (h *Handler) ListWorkouts(c *gin.Context) {
+	uid := middleware.UserID(c)
+	f := stores.WorkoutFilter{Limit: 20, Query: c.Query("q")}
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+		f.Limit = l
+	}
+	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
+		f.Offset = o
+	}
+	workouts, err := h.s.Workout.List(uid, f, requestLocale(c))
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, workouts)
+}
+
+func (h *Handler) GetWorkout(c *gin.Context) {
+	uid := middleware.UserID(c)
+	wid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidWorkoutID, nil)
+		return
+	}
+	w, err := h.s.Workout.Get(uid, wid, requestLocale(c))
+	if err == sql.ErrNoRows {
+		utils.Fail(c, utils.CodeWorkoutNotFound, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, w)
+}
+
+func (h *Handler) CreateWorkout(c *gin.Context) {
+	uid := middleware.UserID(c)
+	var req models.CreateWorkoutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BindError(c, err)
+		return
+	}
+	if err := validate.Struct(req); err != nil {
+		utils.ValidationError(c, err)
+		return
+	}
+	// The due-day tracker orders workouts by started_at as stored TEXT, and the
+	// driver stores a time.Time with its zone suffix — a non-UTC offset would
+	// compare by wall-clock text, not instant, mis-ordering the anchor lookup
+	// (ProgramStore.currentDayIndex). normalizeLoggedAt both defaults a zero time
+	// to now and forces UTC, same as weight logs.
+	if !h.exercisesVisible(c, uid, workoutExerciseIDs(&req)) {
+		return
+	}
+	req.StartedAt = normalizeLoggedAt(req.StartedAt)
+	// Record where the workout happened, not just when. The client sends its own
+	// offset; older clients send none, so fall back to the account zone at that
+	// instant. Either way the row can name its own local day forever without asking
+	// what zone the account is set to today.
+	if req.TZOffsetMinutes == nil {
+		off := h.tzOffsetMinutes(uid, req.StartedAt)
+		req.TZOffsetMinutes = &off
+	}
+	// Snapshot, insert, and stage routine target suggestions in one transaction (issue
+	// #40) — closes a TOCTOU race where two concurrent submissions could both read the
+	// same stale prior best. Staging is still best-effort internally: a failure there
+	// never fails the already-saved workout.
+	w, progression, err := h.s.CreateWorkoutWithProgression(uid, req, requestLocale(c))
+	if utils.IsForeignKeyViolation(err) {
+		utils.Fail(c, utils.CodeUnknownExercises, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	w.Progression = progression
+	utils.Created(c, w)
+}
+
+func (h *Handler) UpdateWorkout(c *gin.Context) {
+	uid := middleware.UserID(c)
+	wid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidWorkoutID, nil)
+		return
+	}
+	var req models.CreateWorkoutRequest
+	// BodyWith keeps the body, so supersetsOmitted can tell an absent superset_group from null.
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		utils.BindError(c, err)
+		return
+	}
+	req.LegacySupersets = supersetsOmitted(c)
+	if err := validate.Struct(req); err != nil {
+		utils.ValidationError(c, err)
+		return
+	}
+	// Same UTC normalization as CreateWorkout — stored started_at text ordering is
+	// load-bearing for the due-day tracker. A zero StartedAt (request omitted it)
+	// stays zero: the store then preserves the stored timestamp instead of
+	// rewriting it to 0001-01-01 (WorkoutStore.Update).
+	if !h.exercisesVisible(c, uid, workoutExerciseIDs(&req)) {
+		return
+	}
+	req.StartedAt = req.StartedAt.UTC()
+	// An edit that moves the day also moves the instant, so the offset stored beside it
+	// has to be the one that instant was chosen in — otherwise readers apply the offset
+	// from wherever the workout was first logged and land a day off. Mirrors CreateWorkout:
+	// trust the client's offset, fall back to the account zone for clients too old to send
+	// one. Skipped for a name/notes-only patch (zero StartedAt), which leaves both alone.
+	if !req.StartedAt.IsZero() && req.TZOffsetMinutes == nil {
+		off := h.tzOffsetMinutes(uid, req.StartedAt)
+		req.TZOffsetMinutes = &off
+	}
+	w, err := h.s.Workout.Update(uid, wid, req, requestLocale(c))
+	if err == sql.ErrNoRows {
+		utils.Fail(c, utils.CodeWorkoutNotFound, nil)
+		return
+	}
+	if utils.IsForeignKeyViolation(err) {
+		utils.Fail(c, utils.CodeUnknownExercises, nil)
+		return
+	}
+	if utils.DBError(c, err) {
+		return
+	}
+	utils.OK(c, w)
+}
+
+func (h *Handler) DeleteWorkout(c *gin.Context) {
+	uid := middleware.UserID(c)
+	wid, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.Fail(c, utils.CodeInvalidWorkoutID, nil)
+		return
+	}
+	n, err := h.s.Workout.Delete(uid, wid)
+	if utils.DBError(c, err) {
+		return
+	}
+	if n == 0 {
+		utils.Fail(c, utils.CodeWorkoutNotFound, nil)
+		return
+	}
+	utils.OK(c, gin.H{"deleted": true})
+}
+
+func workoutExerciseIDs(req *models.CreateWorkoutRequest) []*int64 {
+	ids := make([]*int64, len(req.Exercises))
+	for i := range req.Exercises {
+		ids[i] = &req.Exercises[i].ExerciseID
+	}
+	return ids
+}

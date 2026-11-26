@@ -1,0 +1,87 @@
+import { fireEvent, render, screen } from '@testing-library/react-native'
+
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn(), navigate: jest.fn(), replace: jest.fn() },
+}))
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+)
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}))
+
+import { LANGUAGE_ORDER, LANGUAGE_NAMES } from '@lyftr/shared'
+import { LanguageSheet, filterLanguages } from './LanguageSheet'
+
+const setup = async (value: 'system' | 'en' | 'es' = 'system') => {
+  const onSelect = jest.fn()
+  const onClose = jest.fn()
+  await render(<LanguageSheet open value={value} onSelect={onSelect} onClose={onClose} />)
+  return { onSelect, onClose }
+}
+
+describe('LanguageSheet', () => {
+  it('lists System first, then names in registry order', async () => {
+    await setup()
+    const buttons = screen.getAllByRole('button')
+    const labels = ['System (English)', ...LANGUAGE_ORDER.map((c) => LANGUAGE_NAMES[c])]
+    expect(buttons).toHaveLength(labels.length)
+    labels.forEach((l) => expect(screen.getByText(l)).toBeTruthy())
+    expect(buttons[0]).toHaveTextContent('System (English)')
+    LANGUAGE_ORDER.forEach((c, i) => expect(buttons[i + 1]).toHaveTextContent(new RegExp('^' + LANGUAGE_NAMES[c])))
+  })
+
+  it('marks only the current value as selected', async () => {
+    await setup('es')
+    const buttons = screen.getAllByRole('button')
+    const selected = buttons.filter((b) => b.props.accessibilityState?.selected === true)
+    expect(selected).toHaveLength(1)
+    expect(selected[0]).toHaveTextContent(/^Español/)
+  })
+
+
+  it('pressing a different language closes and selects', async () => {
+    const { onSelect, onClose } = await setup('system')
+    await fireEvent.press(screen.getByText('English'))
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).toHaveBeenCalledWith('en')
+  })
+
+  it('pressing the current language closes without selecting', async () => {
+    const { onSelect, onClose } = await setup('en')
+    await fireEvent.press(screen.getByText('English'))
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('has no search field at the current language count', async () => {
+    await setup()
+    expect(screen.queryByPlaceholderText('Search languages')).toBeNull()
+  })
+})
+
+describe('filterLanguages', () => {
+  it.each([
+    ['', ['en', 'es', 'ar']],
+    ['   ', ['en', 'es', 'ar']],
+    ['espanol', ['es']],
+    ['ESP', ['es']],
+    ['es', ['es']],
+    ['zz', []],
+  ])('%j -> %j', (q, want) => {
+    expect(filterLanguages(LANGUAGE_ORDER, q)).toEqual(want)
+  })
+})
+
+describe('filterLanguages without String.prototype.normalize', () => {
+  it('falls back to a plain lowercase match instead of throwing', async () => {
+    const spy = jest.spyOn(String.prototype, 'normalize').mockImplementation(() => {
+      throw new RangeError('unsupported')
+    })
+    try {
+      expect(filterLanguages(LANGUAGE_ORDER, 'ESP')).toEqual(['es'])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})

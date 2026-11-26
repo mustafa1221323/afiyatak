@@ -1,0 +1,202 @@
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import en from './locales/en.json'
+import es from './locales/es.json'
+import ar from './locales/ar.json'
+import {
+  i18n, resolveLanguage, SUPPORTED_LANGUAGES, LANGUAGE_NAMES, LANGUAGE_ORDER,
+  languageChoiceLabel,
+} from './index'
+
+// The CI guard for the catalogs. Runs on Node's full ICU under an en-US jest, so
+// Intl.PluralRules here knows every locale; the Hermes path is pinned separately by
+// apps/app/src/lib/pluralRules.test.ts.
+
+const catalogs: Record<string, unknown> = { en, es, ar }
+
+const flatten = (obj: unknown, prefix = ''): Record<string, string> => {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const key = prefix ? `${prefix}.${k}` : k
+    if (v !== null && typeof v === 'object') Object.assign(out, flatten(v, key))
+    else out[key] = v as string
+  }
+  return out
+}
+
+const PLURAL = /^(.*)_(zero|one|two|few|many|other)$/
+const placeholders = (s: string) =>
+  new Set([...s.matchAll(/\{\{\s*([^},\s]+)/g)].map((m) => m[1]))
+const tags = (s: string) => [...s.matchAll(/<\/?([a-zA-Z0-9]+)/g)].map((m) => m[1])
+const sorted = (s: Iterable<string>) => [...s].sort()
+
+const flat: Record<string, Record<string, string>> = {}
+for (const [code, cat] of Object.entries(catalogs)) flat[code] = flatten(cat)
+
+const pluralBases = [...new Set(Object.keys(flat.en).map((k) => PLURAL.exec(k)?.[1]).filter((b): b is string => !!b))]
+const categoriesOf = (locale: string) => new Intl.PluralRules(locale).resolvedOptions().pluralCategories
+
+// A key's expected shape in a locale: en's non-plural keys, plus base_<cat> for each of the
+// locale's own categories.
+const expectedKeys = (locale: string) => {
+  const keys = Object.keys(flat.en).filter((k) => !PLURAL.test(k))
+  for (const base of pluralBases) for (const c of categoriesOf(locale)) keys.push(`${base}_${c}`)
+  return keys.sort()
+}
+
+describe('catalogs', () => {
+  it('has no empty values', () => {
+    for (const [code, cat] of Object.entries(flat)) {
+      const empty = Object.entries(cat).filter(([, v]) => typeof v !== 'string' || v.trim() === '').map(([k]) => k)
+      expect({ code, empty }).toEqual({ code, empty: [] })
+    }
+  })
+
+  it('en carries exactly the plural categories English needs', () => {
+    for (const base of pluralBases) {
+      const have = Object.keys(flat.en).filter((k) => PLURAL.exec(k)?.[1] === base).map((k) => PLURAL.exec(k)![2])
+      expect({ base, have: sorted(have) }).toEqual({ base, have: sorted(categoriesOf('en')) })
+    }
+  })
+
+  it.each(Object.keys(catalogs))('%s has exactly the English key set and its own plural categories', (code) => {
+    const actual = Object.keys(flat[code]).sort()
+    const expected = expectedKeys(code)
+    expect({ missing: expected.filter((k) => !actual.includes(k)) }).toEqual({ missing: [] })
+    expect({ extra: actual.filter((k) => !expected.includes(k)) }).toEqual({ extra: [] })
+  })
+
+  it.each(Object.keys(catalogs))('%s uses the same {{placeholders}} as English', (code) => {
+    const mismatches: string[] = []
+    for (const [key, value] of Object.entries(flat[code])) {
+      const m = PLURAL.exec(key)
+      const enKey = m ? `${m[1]}_other` : key
+      const want = placeholders(flat.en[enKey])
+      const got = placeholders(value)
+      if (m) { want.delete('count'); got.delete('count') }
+      if (sorted(want).join() !== sorted(got).join()) mismatches.push(key)
+    }
+    expect(mismatches).toEqual([])
+  })
+
+  it.each(Object.keys(catalogs))('%s uses the same <tags> as English (Trans keys)', (code) => {
+    const mismatches: string[] = []
+    for (const [key, value] of Object.entries(flat[code])) {
+      const m = PLURAL.exec(key)
+      const enKey = m ? `${m[1]}_other` : key
+      if (sorted(tags(flat.en[enKey])).join() !== sorted(tags(value)).join()) mismatches.push(key)
+    }
+    expect(mismatches).toEqual([])
+  })
+
+  it.each(Object.keys(catalogs))('%s plural variants keep {{count}} wherever the English singular has it', (code) => {
+    const dropped: string[] = []
+    for (const base of pluralBases) {
+      if (!placeholders(flat.en[`${base}_one`]).has('count')) continue
+      for (const [key, value] of Object.entries(flat[code])) {
+        if (PLURAL.exec(key)?.[1] === base && !placeholders(value).has('count')) dropped.push(key)
+      }
+    }
+    expect(dropped).toEqual([])
+  })
+})
+
+describe('plural selection', () => {
+  afterEach(async () => { await i18n.changeLanguage('en') })
+
+  it('en picks one / other', () => {
+    expect(i18n.t('settings.library.refreshed', { count: 1, amount: '1' })).toBe(en.settings.library.refreshed_one.replace('{{amount}}', '1'))
+    expect(i18n.t('settings.library.refreshed', { count: 2, amount: '2' })).toBe(en.settings.library.refreshed_other.replace('{{amount}}', '2'))
+    expect(i18n.t('settings.library.refreshed', { count: 0, amount: '0' })).toBe(en.settings.library.refreshed_other.replace('{{amount}}', '0'))
+  })
+
+  it('es picks one / other / many', async () => {
+    await i18n.changeLanguage('es')
+    const lib = es.settings.library
+    expect(i18n.t('settings.library.refreshed', { count: 1, amount: '1' })).toBe(lib.refreshed_one.replace('{{amount}}', '1'))
+    expect(i18n.t('settings.library.refreshed', { count: 2, amount: '2' })).toBe(lib.refreshed_other.replace('{{amount}}', '2'))
+    expect(i18n.t('settings.library.refreshed', { count: 1000000, amount: '1.000.000' })).toBe(lib.refreshed_many.replace('{{amount}}', '1.000.000'))
+  })
+
+  // "1 de 1 series completadas" shipped because the total was interpolated, not counted.
+  it('a workout with one set says "set"/"serie", not "sets"/"series"', async () => {
+    expect(i18n.t('workouts.active.setsDone', { done: 1, count: 1 })).toBe('1/1 set done')
+    expect(i18n.t('workouts.active.setsDone', { done: 0, count: 3 })).toBe('0/3 sets done')
+    await i18n.changeLanguage('es')
+    expect(i18n.t('workouts.active.setsDone', { done: 1, count: 1 })).toBe('1/1 serie completada')
+    expect(i18n.t('workouts.active.finishConfirm.message', { done: 1, count: 1 })).toBe('1 de 1 serie completada. Se guardará el entrenamiento.')
+    expect(i18n.t('workouts.active.finishConfirm.message', { done: 2, count: 5 })).toBe('2 de 5 series completadas. Se guardará el entrenamiento.')
+  })
+})
+
+describe('ar plurals', () => {
+  afterEach(async () => { await i18n.changeLanguage('en') })
+
+  it('picks each Arabic category and reads right to left', async () => {
+    await i18n.changeLanguage('ar')
+    const t = (count: number) => i18n.t('common.count.exercises', { count })
+    expect([t(0), t(1), t(2), t(3), t(11), t(100)]).toEqual(
+      [ar.common.count.exercises_zero, ar.common.count.exercises_one, ar.common.count.exercises_two,
+        ar.common.count.exercises_few, ar.common.count.exercises_many, ar.common.count.exercises_other]
+        .map((s, i) => s.replace('{{count}}', String([0, 1, 2, 3, 11, 100][i]))))
+    expect(i18n.dir('ar')).toBe('rtl')
+  })
+})
+
+describe('resolveLanguage', () => {
+  it.each([
+    ['system', ['es-MX', 'en'], 'es'],
+    ['system', ['fr-FR', 'es'], 'es'],
+    ['system', ['fr'], 'en'],
+    ['system', [], 'en'],
+    ['system', [''], 'en'],
+    ['system', ['ES_es'], 'es'],
+    ['en', ['es'], 'en'],
+  ] as const)('%s + %j -> %s', (pref, tags, want) => {
+    expect(resolveLanguage(pref, tags)).toBe(want)
+  })
+})
+
+describe('key safety', () => {
+  it('rejects an unknown key at type level', () => {
+    // @ts-expect-error unknown key is a type error
+    i18n.t('settings.noSuchKey')
+  })
+
+  it('rejects a key that is only known to be a string', () => {
+    // A key built at run time cannot be checked against the catalog, so tsc refuses it:
+    // a template key has to be typed to a union of real keys (food.meal.${Meal}).
+    const dynamic: string = 'settings.title'
+    // @ts-expect-error a string-typed key is a type error
+    i18n.t(dynamic)
+  })
+})
+
+describe('language registry', () => {
+  afterEach(async () => { await i18n.changeLanguage('en') })
+
+  it('locales/README.md mirrors the registry', () => {
+    const readme = readFileSync(join(__dirname, 'locales', 'README.md'), 'utf8')
+    const rows = [...readme.matchAll(/^\| `([a-z-]+)` \| ([^|]+?) \|/gm)]
+    expect(rows.map((r) => r[1]).sort()).toEqual([...SUPPORTED_LANGUAGES].sort())
+    for (const [, code, rawName] of rows) {
+      const name = rawName.trim()
+      const c = code as keyof typeof LANGUAGE_NAMES
+      expect({ code, name }).toEqual({ code, name: LANGUAGE_NAMES[c] })
+    }
+  })
+
+  it('LANGUAGE_ORDER is a permutation of SUPPORTED_LANGUAGES', () => {
+    expect([...LANGUAGE_ORDER].sort()).toEqual([...SUPPORTED_LANGUAGES].sort())
+    expect(LANGUAGE_ORDER).toEqual(['en', 'es', 'ar'])
+  })
+
+  it('languageChoiceLabel names the resolved language and never translates an endonym', async () => {
+    expect(languageChoiceLabel('system')).toBe('System (English)')
+    expect(languageChoiceLabel('en')).toBe('English')
+    await i18n.changeLanguage('es')
+    expect(languageChoiceLabel('system')).toBe('Sistema (Español)')
+    expect(languageChoiceLabel('en')).toBe('English')
+  })
+
+})

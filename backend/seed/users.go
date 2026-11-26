@@ -1,0 +1,111 @@
+package seed
+
+import (
+	"database/sql"
+	"log"
+
+	"github.com/Cawlumm/lyftr-backend/config"
+	"github.com/Cawlumm/lyftr-backend/utils"
+)
+
+// DemoEmail is the seeded demo account. Its password is published in the README, so
+// nothing may create it unless DEMO_MODE is on — see WarnLeftoverDemoUser for the
+// instances that already have one.
+const DemoEmail = config.DemoEmail
+
+// DemoPassword is the published password. The account is kept at it, see DemoUser.
+const DemoPassword = "password123"
+
+func DemoUser(db *sql.DB) {
+	var count int
+	// NOCASE, as everywhere else an address is matched: a case-variant of the demo address is
+	// the demo account for this purpose, and inserting beside it would create the duplicate
+	// the unique index and createUserTx exist to prevent.
+	db.QueryRow(`SELECT COUNT(*) FROM users WHERE email = ? COLLATE NOCASE`, DemoEmail).Scan(&count)
+	if count > 0 {
+		resetDemoAccount(db)
+		return
+	}
+
+	hash, err := utils.HashPassword(DemoPassword)
+	if err != nil {
+		log.Printf("seed: failed to hash password: %v", err)
+		return
+	}
+
+	res, err := db.Exec(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, DemoEmail, hash)
+	if err != nil {
+		log.Printf("seed: failed to create demo user: %v", err)
+		return
+	}
+
+	userID, _ := res.LastInsertId()
+	db.Exec(`INSERT INTO user_settings (user_id) VALUES (?)`, userID)
+	log.Println("seed: demo user created (demo@lyftr.local / password123)")
+}
+
+// resetDemoAccount puts a surviving demo account back to its published state on every
+// boot. The credentials are public, so anyone can sign in and, before the API refused it,
+// change the password and lock the demo out for everyone, or promote it. A cheap check
+// (one bcrypt compare) keeps the common boot from writing anything: only a changed
+// password is rewritten, and rewriting it bumps token_version so a session minted with
+// the stolen password dies with it. The admin flag is always cleared.
+func resetDemoAccount(db *sql.DB) {
+	rows, err := db.Query(`SELECT id, password_hash FROM users WHERE email = ? COLLATE NOCASE`, DemoEmail)
+	if err != nil {
+		log.Printf("seed: reading demo account: %v", err)
+		return
+	}
+	type acct struct {
+		id   int64
+		hash string
+	}
+	var accts []acct
+	for rows.Next() {
+		var a acct
+		if err := rows.Scan(&a.id, &a.hash); err != nil {
+			rows.Close()
+			log.Printf("seed: reading demo account: %v", err)
+			return
+		}
+		accts = append(accts, a)
+	}
+	rows.Close()
+
+	for _, a := range accts {
+		if !utils.CheckPassword(DemoPassword, a.hash) {
+			hash, err := utils.HashPassword(DemoPassword)
+			if err != nil {
+				log.Printf("seed: failed to hash password: %v", err)
+				continue
+			}
+			if _, err := db.Exec(`UPDATE users SET password_hash = ?, token_version = token_version + 1,
+			                      updated_at = CURRENT_TIMESTAMP WHERE id = ?`, hash, a.id); err != nil {
+				log.Printf("seed: resetting demo password: %v", err)
+				continue
+			}
+			log.Println("seed: demo account password was changed; reset to the published one")
+		}
+	}
+	if _, err := db.Exec(`UPDATE users SET is_admin = 0 WHERE email = ? COLLATE NOCASE AND is_admin != 0`, DemoEmail); err != nil {
+		log.Printf("seed: clearing demo admin flag: %v", err)
+	}
+}
+
+// WarnLeftoverDemoUser flags a demo account on an instance that is no longer seeding
+// one. Until DEMO_MODE existed every install got this account, so upgrading does not
+// remove the exposure it already has — and closing registration while a published
+// password still works would be a false sense of security.
+//
+// It warns rather than deleting: the row may by now hold real workouts, and silently
+// dropping someone's data on upgrade is not a trade this can make for them.
+func WarnLeftoverDemoUser(db *sql.DB) {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE email = ? COLLATE NOCASE`, DemoEmail).Scan(&count); err != nil || count == 0 {
+		return
+	}
+	log.Printf("WARNING: this instance still has the %s account from an earlier version, and "+
+		"its password is published in the docs. Anyone who can reach this server can sign in as "+
+		"it. Delete it from Settings → Delete account while signed in as that user, or set "+
+		"DEMO_MODE=true if you meant to keep it.", DemoEmail)
+}
